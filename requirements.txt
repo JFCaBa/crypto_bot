@@ -21,9 +21,9 @@ backtrader>=1.9.76.123
 pyfolio>=0.9.2
 
 # Machine Learning (Optional)
-scikit-learn>=1.0.0
-tensorflow>=2.8.0
-pytorch>=1.10.0
+# scikit-learn>=1.0.0
+# tensorflow>=2.8.0
+# pytorch>=1.10.0
 
 # Risk Management
 risk-toolkit>=1.0.0
