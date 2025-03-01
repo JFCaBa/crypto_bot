@@ -8,7 +8,7 @@ websockets>=10.0.0
 aiohttp>=3.8.0
 
 # Technical Analysis
-ta-lib>=0.4.24
+# ta-lib>=0.4.24
 pandas-ta>=0.3.14b0
 
 # Data storage
