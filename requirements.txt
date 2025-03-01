@@ -21,12 +21,14 @@ backtrader>=1.9.76.123
 pyfolio>=0.9.2
 
 # Machine Learning (Optional)
-# scikit-learn>=1.0.0
+scikit-learn>=1.0.0
+# Install tensorflow and pytorch separately based on your system configuration
 # tensorflow>=2.8.0
 # pytorch>=1.10.0
 
 # Risk Management
-risk-toolkit>=1.0.0
+# risk-toolkit has been removed as it's not available
+risktools>=0.1.0
 
 # Visualization
 plotly>=5.3.0
