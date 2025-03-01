@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.venv/
+config.json
+
+# VSCode settings
+.vscode/
+
+# Distribution / packaging
+.Python
+dist/
+build/
+*.egg-info/
+
+# Testing
+.coverage
+.tox/
+nosetests.xml
+pytest_cache/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Logs and local environment files
+*.log
+*.sqlite3
+.DS_Store
+
+# Ignore compiled Python files
+gunicorn.log
+*.pid
+
+# Ignore mypy and other type checking outputs
+.mypy_cache/
+.pytest_cache/
