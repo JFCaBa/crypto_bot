@@ -58,7 +58,6 @@ cryptobot/
 
 - Python 3.8 or higher
 - PostgreSQL (optional, for database support)
-- TA-Lib (for technical analysis)
 
 ### Setup
 
