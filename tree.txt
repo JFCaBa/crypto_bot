@@ -1,0 +1,88 @@
+.
+├── Dockerfile
+├── LICENSE
+├── README.md
+├── cryptobot
+│   ├── __init__.py
+│   ├── backtesting
+│   │   ├── __init__.py
+│   │   ├── analyzer.py
+│   │   ├── engine.py
+│   │   └── simulator.py
+│   ├── config
+│   │   ├── __init__.py
+│   │   ├── exchanges.py
+│   │   ├── settings.py
+│   │   └── strategies.py
+│   ├── core
+│   │   ├── __init__.py
+│   │   ├── engine.py
+│   │   ├── orderbook.py
+│   │   ├── portfolio.py
+│   │   └── trade.py
+│   ├── data
+│   │   ├── __init__.py
+│   │   ├── database.py
+│   │   ├── historical.py
+│   │   ├── processor.py
+│   │   └── websocket.py
+│   ├── exchanges
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── binance.py
+│   │   ├── bybit.py
+│   │   ├── coinbase.py
+│   │   ├── kraken.py
+│   │   └── mexc.py
+│   ├── logs
+│   ├── notifications
+│   │   ├── __init__.py
+│   │   ├── email.py
+│   │   ├── sms.py
+│   │   └── telegram.py
+│   ├── risk_management
+│   │   ├── __init__.py
+│   │   ├── manager.py
+│   │   ├── stop_loss.py
+│   │   └── take_profit.py
+│   ├── security
+│   │   ├── __init__.py
+│   │   ├── audit.py
+│   │   └── encryption.py
+│   ├── strategies
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── bollinger_bands.py
+│   │   ├── custom.py
+│   │   ├── machine_learning.py
+│   │   ├── moving_average.py
+│   │   └── rsi.py
+│   ├── ui
+│   │   ├── __init__.py
+│   │   ├── cli.py
+│   │   └── web_dashboard.py
+│   └── utils
+│       ├── __init__.py
+│       ├── helpers.py
+│       ├── logger.py
+│       └── validators.py
+├── docker-compose.yml
+├── docs
+│   ├── api.md
+│   ├── setup.md
+│   ├── strategies.md
+│   ├── troubleshooting.md
+│   └── usage.md
+├── main.py
+├── requirements.txt
+├── setup.py
+├── tests
+│   ├── __init__.py
+│   ├── test_backtest.py
+│   ├── test_core.py
+│   ├── test_exchanges.py
+│   ├── test_risk.py
+│   └── test_strategies.py
+└── tree.txt
+
+16 directories, 70 files
