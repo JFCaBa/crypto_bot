@@ -82,19 +82,13 @@ cryptobot/
    pip install -r requirements.txt
    ```
 
-4. Install TA-Lib (follow platform-specific instructions):
-
-   - macOS: `brew install ta-lib`
-   - Linux: `apt-get install ta-lib`
-   - Windows: Download and install from [TA-Lib](https://ta-lib.org/hdr_dw.html)
-
-5. Create a configuration file (copy from the example):
+4. Create a configuration file (copy from the example):
 
    ```bash
    cp config.example.json config.json
    ```
 
-6. Edit the configuration file with your exchange API keys and settings
+5. Edit the configuration file with your exchange API keys and settings
 
 ## Usage
 
@@ -126,7 +120,7 @@ Available commands:
 The web dashboard provides a graphical interface for monitoring trading activity.
 
 ```bash
-python -m cryptobot.web_dashboard --config config.json --port 8050
+python -m cryptobot.ui.web_dashboard --config config.json --port 8050
 ```
 
 Then open your browser and navigate to `http://localhost:8050` to access the dashboard.
@@ -297,7 +291,7 @@ class MyCustomStrategy(BaseStrategy):
 CryptoBot includes a powerful backtesting engine to test strategies on historical data.
 
 ```bash
-python -m cryptobot.cli backtest --strategy=ma_crossover --start=2023-01-01 --end=2023-12-31 --timeframe=1h
+python -m cryptobot.ui.cli backtest --strategy=ma_crossover --start=2023-01-01 --end=2023-12-31 --timeframe=1h
 ```
 
 Backtesting results include:
