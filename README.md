@@ -272,5 +272,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [CCXT](https://github.com/ccxt/ccxt) for exchange API integration
 - [pandas](https://pandas.pydata.org/) for data manipulation
-- [TA-Lib](https://ta-lib.org/) for technical analysis
 - [loguru](https://github.com/Delgan/loguru) for logging
