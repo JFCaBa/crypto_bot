@@ -96,7 +96,7 @@ cryptobot/
 The CLI provides a powerful interface for controlling and monitoring the trading bot.
 
 ```bash
-python -m cryptobot.cli --config config.json --mode test
+python -m cryptobot.ui.cli --config config.json --mode test
 ```
 
 Available commands:
