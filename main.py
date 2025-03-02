@@ -169,8 +169,8 @@ def create_default_config(config_path: str):
             "ma_crossover": {
                 "enabled": True,
                 "type": "MovingAverageCrossover",
-                "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
-                "timeframes": ["1h", "4h"],
+                "symbols": ["BTC/USDT"],
+                "timeframes": ["1h"],
                 "params": {
                     "fast_period": 10,
                     "slow_period": 50,
@@ -188,7 +188,7 @@ def create_default_config(config_path: str):
             "rsi": {
                 "enabled": False,
                 "type": "RSI",
-                "symbols": ["BTC/USDT", "ETH/USDT"],
+                "symbols": ["BTC/USDT"],
                 "timeframes": ["1h"],
                 "params": {
                     "period": 14,

@@ -195,8 +195,6 @@ class CryptoBotCLI(cmd.Cmd):
             # In a real implementation, we would get symbols from the exchange
             # For now, just show some examples
             print("  BTC/USDT")
-            print("  ETH/USDT")
-            print("  BNB/USDT")
     
     def do_download_data(self, arg):
         """Download historical data for backtesting."""
