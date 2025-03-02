@@ -92,8 +92,14 @@ class MovingAverageCrossover(BaseStrategy):
                 
             # Ensure we have OHLCV data
             required_columns = ['open', 'high', 'low', 'close', 'volume']
-            if not all(col in df.columns for col in required_columns):
-                logger.warning(f"Missing required columns in data for {symbol} {timeframe}")
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                logger.warning(f"Missing required columns in data for {symbol} {timeframe}: {missing_columns}")
+                return False
+                
+            # Check if we have enough data for calculation
+            if len(df) < self.params['slow_period'] + 10:
+                logger.warning(f"Not enough data points for {symbol} {timeframe}. Need at least {self.params['slow_period'] + 10}, got {len(df)}.")
                 return False
                 
             # Extract parameters
@@ -128,7 +134,7 @@ class MovingAverageCrossover(BaseStrategy):
                 
             # Calculate crossover
             df['ma_diff'] = df['fast_ma'] - df['slow_ma']
-            df['ma_crossover'] = np.sign(df['ma_diff']).diff()
+            df['ma_crossover'] = np.sign(df['ma_diff']).diff().fillna(0)
             
             # MACD indicators if enabled
             if use_macd:
@@ -136,7 +142,7 @@ class MovingAverageCrossover(BaseStrategy):
                 df['macd'] = df['fast_ma'] - df['slow_ma']
                 df['macd_signal'] = df['macd'].ewm(span=signal_period, adjust=False).mean()
                 df['macd_hist'] = df['macd'] - df['macd_signal']
-                df['macd_crossover'] = np.sign(df['macd'] - df['macd_signal']).diff()
+                df['macd_crossover'] = np.sign(df['macd'] - df['macd_signal']).diff().fillna(0)
                 
             # Store calculated indicators
             indicators = {}
@@ -160,7 +166,10 @@ class MovingAverageCrossover(BaseStrategy):
             return True
         except Exception as e:
             logger.error(f"Error calculating indicators for {symbol} {timeframe}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
+
             
     def generate_signals(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """
@@ -200,6 +209,16 @@ class MovingAverageCrossover(BaseStrategy):
             trailing_stop = self.params['trailing_stop']
             risk_per_trade = self.params['risk_per_trade']
             
+            # Ensure indicators are calculated
+            if not self.calculate_indicators(symbol, timeframe):
+                logger.warning(f"Failed to calculate indicators for {symbol} {timeframe}")
+                return signal
+                
+            # Check if required indicators exist
+            if 'fast_ma' not in df.columns or 'slow_ma' not in df.columns:
+                logger.warning(f"Required indicators not found for {symbol} {timeframe}")
+                return signal
+                
             # Get latest indicators
             latest = df.iloc[-1]
             previous = df.iloc[-2] if len(df) > 1 else None
@@ -213,10 +232,10 @@ class MovingAverageCrossover(BaseStrategy):
             
             if not is_active:
                 # Check for entry signal
-                if use_macd:
+                if use_macd and 'macd_crossover' in df.columns:
                     # Use MACD crossover for entry
                     crossover = latest['macd_crossover']
-                    strength = abs(latest['macd_hist'])
+                    strength = abs(latest['macd_hist']) if 'macd_hist' in df.columns else 0
                     
                     if crossover > 0 and strength > entry_threshold:
                         # Bullish signal: MACD crosses above signal line
@@ -230,9 +249,9 @@ class MovingAverageCrossover(BaseStrategy):
                         
                         # Add stop loss and take profit
                         if stop_loss > 0:
-                            signal['stop_loss'] = current_price * (1 - stop_loss)
+                            signal['stop_loss'] = current_price * (1 - stop_loss / 100)
                         if take_profit > 0:
-                            signal['take_profit'] = current_price * (1 + take_profit)
+                            signal['take_profit'] = current_price * (1 + take_profit / 100)
                         if trailing_stop > 0:
                             signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
                             
@@ -248,15 +267,15 @@ class MovingAverageCrossover(BaseStrategy):
                         
                         # Add stop loss and take profit
                         if stop_loss > 0:
-                            signal['stop_loss'] = current_price * (1 + stop_loss)
+                            signal['stop_loss'] = current_price * (1 + stop_loss / 100)
                         if take_profit > 0:
-                            signal['take_profit'] = current_price * (1 - take_profit)
+                            signal['take_profit'] = current_price * (1 - take_profit / 100)
                         if trailing_stop > 0:
                             signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
-                else:
+                elif 'ma_crossover' in df.columns:
                     # Use simple MA crossover for entry
                     crossover = latest['ma_crossover']
-                    strength = abs(latest['ma_diff'])
+                    strength = abs(latest['ma_diff']) if 'ma_diff' in df.columns else 0
                     
                     if crossover > 0 and strength > entry_threshold:
                         # Bullish signal: fast MA crosses above slow MA
@@ -270,9 +289,9 @@ class MovingAverageCrossover(BaseStrategy):
                         
                         # Add stop loss and take profit
                         if stop_loss > 0:
-                            signal['stop_loss'] = current_price * (1 - stop_loss)
+                            signal['stop_loss'] = current_price * (1 - stop_loss / 100)
                         if take_profit > 0:
-                            signal['take_profit'] = current_price * (1 + take_profit)
+                            signal['take_profit'] = current_price * (1 + take_profit / 100)
                         if trailing_stop > 0:
                             signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
                             
@@ -288,18 +307,18 @@ class MovingAverageCrossover(BaseStrategy):
                         
                         # Add stop loss and take profit
                         if stop_loss > 0:
-                            signal['stop_loss'] = current_price * (1 + stop_loss)
+                            signal['stop_loss'] = current_price * (1 + stop_loss / 100)
                         if take_profit > 0:
-                            signal['take_profit'] = current_price * (1 - take_profit)
+                            signal['take_profit'] = current_price * (1 - take_profit / 100)
                         if trailing_stop > 0:
                             signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
             else:
                 # Check for exit signals
-                if use_macd:
+                if use_macd and 'macd_crossover' in df.columns:
                     # Use MACD crossover for exit
                     if position['side'] == 'long':
                         crossover = latest['macd_crossover']
-                        strength = abs(latest['macd_hist'])
+                        strength = abs(latest['macd_hist']) if 'macd_hist' in df.columns else 0
                         
                         if crossover < 0 and strength > exit_threshold:
                             # Bearish signal: MACD crosses below signal line
@@ -308,18 +327,18 @@ class MovingAverageCrossover(BaseStrategy):
                             signal['amount'] = position['amount']
                     elif position['side'] == 'short':
                         crossover = latest['macd_crossover']
-                        strength = abs(latest['macd_hist'])
+                        strength = abs(latest['macd_hist']) if 'macd_hist' in df.columns else 0
                         
                         if crossover > 0 and strength > exit_threshold:
                             # Bullish signal: MACD crosses above signal line
                             signal['action'] = 'close'
                             signal['price'] = current_price
                             signal['amount'] = position['amount']
-                else:
+                elif 'ma_crossover' in df.columns:
                     # Use simple MA crossover for exit
                     if position['side'] == 'long':
                         crossover = latest['ma_crossover']
-                        strength = abs(latest['ma_diff'])
+                        strength = abs(latest['ma_diff']) if 'ma_diff' in df.columns else 0
                         
                         if crossover < 0 and strength > exit_threshold:
                             # Bearish signal: fast MA crosses below slow MA
@@ -328,7 +347,7 @@ class MovingAverageCrossover(BaseStrategy):
                             signal['amount'] = position['amount']
                     elif position['side'] == 'short':
                         crossover = latest['ma_crossover']
-                        strength = abs(latest['ma_diff'])
+                        strength = abs(latest['ma_diff']) if 'ma_diff' in df.columns else 0
                         
                         if crossover > 0 and strength > exit_threshold:
                             # Bullish signal: fast MA crosses above slow MA
@@ -339,6 +358,8 @@ class MovingAverageCrossover(BaseStrategy):
             return signal
         except Exception as e:
             logger.error(f"Error generating signals for {symbol} {timeframe}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return signal
             
     def _calculate_position_size(self, symbol: str, price: float, risk_percent: float, stop_loss_percent: float) -> float:
@@ -355,20 +376,44 @@ class MovingAverageCrossover(BaseStrategy):
             float: Position size in base currency
         """
         try:
-            # Default position size (1 unit)
+            # Input validation
+            if not price or price <= 0:
+                logger.warning(f"Invalid price for position size calculation: {price}")
+                return 1.0
+                
+            # Default position size (1 unit) if risk parameters are invalid
             if risk_percent <= 0 or stop_loss_percent <= 0:
+                logger.info(f"Using default position size due to invalid risk parameters: risk_percent={risk_percent}, stop_loss_percent={stop_loss_percent}")
                 return 1.0
                 
             # Calculate position size based on risk
             # risk_amount = account_balance * risk_percent
             # position_size = risk_amount / (price * stop_loss_percent)
             
-            # For now, we'll use a simple placeholder
-            # In a real implementation, this would use the actual account balance
-            account_balance = 10000.0  # Placeholder
-            risk_amount = account_balance * risk_percent
-            position_size = risk_amount / (price * stop_loss_percent)
+            # Get account balance from backtesting engine or use default
+            account_balance = getattr(self, 'account_size', 10000.0)
             
+            # Calculate max amount to risk
+            risk_amount = account_balance * (risk_percent / 100)
+            
+            # Calculate potential loss per unit based on stop loss
+            loss_per_unit = price * (stop_loss_percent / 100)
+            
+            # Safeguard against division by zero or very small numbers
+            if loss_per_unit < 0.000001:
+                logger.warning(f"Stop loss too small for calculation: {loss_per_unit}")
+                return 1.0
+                
+            # Calculate position size
+            position_size = risk_amount / loss_per_unit
+            
+            # Cap position size if it's unreasonably large
+            max_size = account_balance / price * 0.5  # Max 50% of account in a single position
+            if position_size > max_size:
+                logger.warning(f"Position size capped from {position_size} to {max_size}")
+                position_size = max_size
+                
+            logger.info(f"Calculated position size: {position_size} units at price {price}")
             return position_size
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")

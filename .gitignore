@@ -10,6 +10,7 @@ venv/
 backtest_results/
 config.json
 .env
+data/
 
 # VSCode settings
 .vscode/

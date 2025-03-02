@@ -167,10 +167,10 @@ def create_default_config(config_path: str):
         },
         "strategies": {
             "ma_crossover": {
-                "enabled": True,
-                "type": "MovingAverageCrossover",
-                "symbols": ["BTC/USDT"],
-                "timeframes": ["1h"],
+            "enabled": True,
+            "type": "MovingAverageCrossover",
+            "symbols": ["BTC/USDT"],
+            "timeframes": ["1h", "4h"],
                 "params": {
                     "fast_period": 10,
                     "slow_period": 50,
@@ -186,10 +186,10 @@ def create_default_config(config_path: str):
                 }
             },
             "rsi": {
-                "enabled": False,
-                "type": "RSI",
-                "symbols": ["BTC/USDT"],
-                "timeframes": ["1h"],
+            "enabled": True,
+            "type": "RSI",
+            "symbols": ["BTC/USDT"],
+            "timeframes": ["1h"],
                 "params": {
                     "period": 14,
                     "overbought": 70,
@@ -198,13 +198,37 @@ def create_default_config(config_path: str):
                     "take_profit": 4.0,
                     "risk_per_trade": 0.01
                 }
+            },
+            "bollinger_bands": {
+            "enabled": True,
+            "type": "BollingerBands",
+            "symbols": ["BTC/USDT"],
+            "timeframes": ["1h"],
+                "params": {
+                    "period": 14,
+                    "overbought": 70,
+                    "oversold": 30,
+                    "stop_loss": 2.0,
+                    "take_profit": 4.0,
+                    "risk_per_trade": 0.01
+                }
+            },
+            "ml_strategy_1": {
+            "enabled": True,
+            "type": "MachineLearning",
+            "symbols": ["BTC/USDT"],
+            "timeframes": ["1h"],
+                "params": {
+                    "lookback_period": 200,
+                    "train_interval": 720
+                }
             }
         },
         "risk_management": {
             "enabled": True,
             "max_positions": 5,
-            "max_daily_trades": 20,
-            "max_drawdown_percent": 20.0,
+            "max_daily_trades": 40,
+            "max_drawdown_percent": 10.0,
             "max_risk_per_trade": 2.0,
             "max_risk_per_day": 5.0,
             "max_risk_per_symbol": 10.0,

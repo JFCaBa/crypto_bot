@@ -198,6 +198,11 @@ class BaseStrategy(abc.ABC):
                     price = signal.get('price')
                     params = signal.get('params', {})
                     
+                    # Skip if amount or price is None or zero
+                    if not amount or not price:
+                        logger.warning(f"Invalid amount or price in signal: {signal}")
+                        continue
+                    
                     # Add stop loss and take profit if specified
                     if 'stop_loss' in signal:
                         params['stopLoss'] = signal['stop_loss']
@@ -247,6 +252,11 @@ class BaseStrategy(abc.ABC):
                     amount = signal.get('amount')
                     price = signal.get('price')
                     params = signal.get('params', {})
+                    
+                    # Skip if amount or price is None or zero
+                    if not amount or not price:
+                        logger.warning(f"Invalid amount or price in signal: {signal}")
+                        continue
                     
                     # Add stop loss and take profit if specified
                     if 'stop_loss' in signal:
@@ -353,6 +363,8 @@ class BaseStrategy(abc.ABC):
                     
             except Exception as e:
                 logger.error(f"Error executing signal for {symbol}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
                 
         return executed_trades
         

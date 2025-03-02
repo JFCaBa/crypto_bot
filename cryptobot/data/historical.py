@@ -186,7 +186,7 @@ class HistoricalDataProvider:
         end_date: datetime
     ) -> pd.DataFrame:
         """
-        Get historical data from external API.
+        Get historical data from external API in chunks if necessary.
         
         Args:
             symbol: Trading pair symbol
@@ -198,90 +198,116 @@ class HistoricalDataProvider:
             pd.DataFrame: OHLCV data
         """
         try:
-            # Use CryptoCompare API as an example
-            # In a real implementation, you might use different APIs or sources
-            
             # Convert timeframe to seconds
             interval_seconds = timeframe_to_seconds(timeframe)
             
-            # Calculate limit based on date range and timeframe
+            # Calculate total time range in seconds
             time_diff = end_date - start_date
             time_diff_seconds = time_diff.total_seconds()
-            limit = min(2000, int(time_diff_seconds / interval_seconds) + 1)  # API limit is 2000
             
-            # CryptoCompare API parameters
+            # API limit is 2000 candles per request
+            candles_limit = 2000
+            
+            # Determine how many requests are needed
+            total_candles_needed = int(time_diff_seconds / interval_seconds) + 1
+            num_requests = max(1, (total_candles_needed + candles_limit - 1) // candles_limit)
+            
+            # Base URL for CryptoCompare API
             base_url = "https://min-api.cryptocompare.com/data"
             
             # Determine API endpoint based on timeframe
             if interval_seconds < 3600:  # Less than 1 hour
                 endpoint = "histominute"
-                minute_param = int(interval_seconds / 60)
-                api_url = f"{base_url}/{endpoint}?fsym={symbol.split('/')[0]}&tsym={symbol.split('/')[1]}&limit={limit}&aggregate={minute_param}&e=CCCAGG"
+                aggregate = int(interval_seconds / 60)
             elif interval_seconds < 86400:  # Less than 1 day
                 endpoint = "histohour"
-                hour_param = int(interval_seconds / 3600)
-                api_url = f"{base_url}/{endpoint}?fsym={symbol.split('/')[0]}&tsym={symbol.split('/')[1]}&limit={limit}&aggregate={hour_param}&e=CCCAGG"
+                aggregate = int(interval_seconds / 3600)
             else:  # Daily or greater
                 endpoint = "histoday"
-                day_param = int(interval_seconds / 86400)
-                api_url = f"{base_url}/{endpoint}?fsym={symbol.split('/')[0]}&tsym={symbol.split('/')[1]}&limit={limit}&aggregate={day_param}&e=CCCAGG"
-                
-            # Add API key if provided
-            if self.api_key:
-                api_url += f"&api_key={self.api_key}"
-                
-            # Add start time in Unix timestamp format
-            start_timestamp = int(start_date.timestamp())
-            api_url += f"&toTs={int(end_date.timestamp())}"
+                aggregate = int(interval_seconds / 86400)
             
-            # Make API request
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_url) as response:
-                    if response.status != 200:
-                        logger.error(f"API error: {response.status} - {await response.text()}")
-                        return pd.DataFrame()
-                        
-                    data = await response.json()
-                    
-                    if 'Response' in data and data['Response'] == 'Error':
-                        logger.error(f"API error: {data['Message']}")
-                        return pd.DataFrame()
-                        
-                    # Process API response
-                    if 'Data' not in data or not data['Data']:
-                        logger.warning(f"No data returned from API for {symbol} {timeframe}")
-                        return pd.DataFrame()
-                        
-                    ohlcv_data = data['Data']
-                    
-                    # Convert to DataFrame
-                    df = pd.DataFrame(ohlcv_data)
-                    
-                    # Convert timestamp to datetime
-                    df['timestamp'] = pd.to_datetime(df['time'], unit='s')
-                    df.set_index('timestamp', inplace=True)
-                    
-                    # Rename columns
-                    column_mapping = {
-                        'time': 'timestamp',
-                        'open': 'open',
-                        'high': 'high',
-                        'low': 'low',
-                        'close': 'close',
-                        'volumefrom': 'volume'
-                    }
-                    
-                    df = df.rename(columns=column_mapping)
-                    
-                    # Select required columns
-                    required_columns = ['open', 'high', 'low', 'close', 'volume']
-                    for col in required_columns:
-                        if col not in df.columns:
-                            logger.warning(f"Missing column {col} in API data for {symbol} {timeframe}")
+            all_data = []
+            current_end = end_date
+            for i in range(num_requests):
+                # Calculate the start time for this chunk
+                current_start = max(start_date, current_end - timedelta(seconds=candles_limit * interval_seconds))
+                
+                # Construct API URL
+                api_url = (f"{base_url}/{endpoint}?fsym={symbol.split('/')[0]}&tsym={symbol.split('/')[1]}"
+                        f"&limit={candles_limit}&aggregate={aggregate}&e=CCCAGG")
+                if self.api_key:
+                    api_url += f"&api_key={self.api_key}"
+                api_url += f"&toTs={int(current_end.timestamp())}"
+                
+                logger.debug(f"Fetching API chunk {i+1}/{num_requests} for {symbol} {timeframe} from {current_start} to {current_end}")
+                
+                # Make API request
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(api_url) as response:
+                        if response.status != 200:
+                            logger.error(f"API error: {response.status} - {await response.text()}")
                             return pd.DataFrame()
                             
-                    return df[required_columns]
+                        data = await response.json()
+                        
+                        if 'Response' in data and data['Response'] == 'Error':
+                            logger.error(f"API error: {data['Message']}")
+                            return pd.DataFrame()
+                            
+                        if 'Data' not in data or not data['Data']:
+                            logger.warning(f"No data returned from API for {symbol} {timeframe} in chunk {i+1}")
+                            current_end = current_start
+                            continue
+                            
+                        ohlcv_data = data['Data']
+                        all_data.extend(ohlcv_data)
+                
+                # Update current_end for the next chunk
+                # Subtract 1 second to ensure no overlap in timestamps
+                current_end = current_start - timedelta(seconds=1)
+                if current_end <= start_date:
+                    break
+            
+            if not all_data:
+                logger.warning(f"No data returned from API for {symbol} {timeframe} after all chunks")
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(all_data)
+            
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['time'], unit='s')
+            df.set_index('timestamp', inplace=True)
+            
+            # Remove duplicates and sort by timestamp (in case of overlaps between chunks)
+            df = df.loc[~df.index.duplicated(keep='first')]
+            df = df.sort_index()
+            
+            # Rename columns
+            column_mapping = {
+                'time': 'timestamp',
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volumefrom': 'volume'
+            }
+            
+            df = df.rename(columns=column_mapping)
+            
+            # Select required columns
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            for col in required_columns:
+                if col not in df.columns:
+                    logger.warning(f"Missing column {col} in API data for {symbol} {timeframe}")
+                    return pd.DataFrame()
                     
+            # Filter to ensure data is within requested range
+            df = df[(df.index >= start_date) & (df.index <= end_date)]
+            logger.info(f"Fetched {len(df)} rows for {symbol} {timeframe} from API")
+            
+            return df[required_columns]
+            
         except Exception as e:
             logger.error(f"Error fetching API data for {symbol} {timeframe}: {str(e)}")
             return pd.DataFrame()

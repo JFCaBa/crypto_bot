@@ -87,12 +87,18 @@ class RSIStrategy(BaseStrategy):
                 
             # Ensure we have OHLCV data
             required_columns = ['open', 'high', 'low', 'close', 'volume']
-            if not all(col in df.columns for col in required_columns):
-                logger.warning(f"Missing required columns in data for {symbol} {timeframe}")
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                logger.warning(f"Missing required columns in data for {symbol} {timeframe}: {missing_columns}")
+                return False
+                
+            # Check if we have enough data for calculation
+            period = self.params['period']
+            if len(df) < period + 10:
+                logger.warning(f"Not enough data points for {symbol} {timeframe}. Need at least {period + 10}, got {len(df)}.")
                 return False
                 
             # Extract parameters
-            period = self.params['period']
             use_ema = self.params['use_ema']
             ema_period = self.params['ema_period']
             use_divergence = self.params['use_divergence']
@@ -100,7 +106,7 @@ class RSIStrategy(BaseStrategy):
             
             # Calculate RSI
             # Get price changes
-            delta = df['close'].diff()
+            delta = df['close'].diff().fillna(0)
             
             # Separate gains and losses
             gain = delta.copy()
@@ -124,8 +130,8 @@ class RSIStrategy(BaseStrategy):
                     avg_gain.loc[df.index[i]] = (avg_gain.iloc[-1] * (period - 1) + gain.iloc[i]) / period
                     avg_loss.loc[df.index[i]] = (avg_loss.iloc[-1] * (period - 1) + loss.iloc[i]) / period
             
-            # Calculate RS (Relative Strength)
-            rs = avg_gain / avg_loss
+            # Calculate RS (Relative Strength) with handling for divide by zero
+            rs = avg_gain / avg_loss.replace(0, 1e-10)  # Replace zeros with small number to avoid division by zero
             
             # Calculate RSI
             df['rsi'] = 100 - (100 / (1 + rs))
@@ -136,51 +142,62 @@ class RSIStrategy(BaseStrategy):
             else:
                 df['rsi_smooth'] = df['rsi']
             
+            # Fill any NaN values with default values
+            df['rsi'] = df['rsi'].fillna(50)
+            df['rsi_smooth'] = df['rsi_smooth'].fillna(50)
+            
             # Calculate RSI divergence if enabled
             if use_divergence:
-                # Look for price highs and lows
-                df['price_high'] = df['close'].rolling(window=divergence_period*2+1, center=True).apply(
-                    lambda x: x[divergence_period] == max(x), raw=True
-                ).fillna(0).astype(bool)
-                
-                df['price_low'] = df['close'].rolling(window=divergence_period*2+1, center=True).apply(
-                    lambda x: x[divergence_period] == min(x), raw=True
-                ).fillna(0).astype(bool)
-                
-                # Look for RSI highs and lows
-                df['rsi_high'] = df['rsi'].rolling(window=divergence_period*2+1, center=True).apply(
-                    lambda x: x[divergence_period] == max(x), raw=True
-                ).fillna(0).astype(bool)
-                
-                df['rsi_low'] = df['rsi'].rolling(window=divergence_period*2+1, center=True).apply(
-                    lambda x: x[divergence_period] == min(x), raw=True
-                ).fillna(0).astype(bool)
-                
-                # Initialize divergence columns
-                df['bullish_divergence'] = False
-                df['bearish_divergence'] = False
-                
-                # Detect bullish divergence (price making lower lows but RSI making higher lows)
-                for i in range(divergence_period, len(df)-divergence_period):
-                    if df['price_low'].iloc[i]:
-                        # Look back for previous low
-                        for j in range(i-divergence_period, i):
-                            if df['price_low'].iloc[j]:
-                                # Check for bullish divergence
-                                if df['close'].iloc[i] < df['close'].iloc[j] and df['rsi'].iloc[i] > df['rsi'].iloc[j]:
-                                    df['bullish_divergence'].iloc[i] = True
-                                break
-                
-                # Detect bearish divergence (price making higher highs but RSI making lower highs)
-                for i in range(divergence_period, len(df)-divergence_period):
-                    if df['price_high'].iloc[i]:
-                        # Look back for previous high
-                        for j in range(i-divergence_period, i):
-                            if df['price_high'].iloc[j]:
-                                # Check for bearish divergence
-                                if df['close'].iloc[i] > df['close'].iloc[j] and df['rsi'].iloc[i] < df['rsi'].iloc[j]:
-                                    df['bearish_divergence'].iloc[i] = True
-                                break
+                try:
+                    # Look for price highs and lows
+                    df['price_high'] = df['close'].rolling(window=min(divergence_period*2+1, len(df)), center=True).apply(
+                        lambda x: x[min(divergence_period, len(x)-1)] == max(x), raw=True
+                    ).fillna(0).astype(bool)
+                    
+                    df['price_low'] = df['close'].rolling(window=min(divergence_period*2+1, len(df)), center=True).apply(
+                        lambda x: x[min(divergence_period, len(x)-1)] == min(x), raw=True
+                    ).fillna(0).astype(bool)
+                    
+                    # Look for RSI highs and lows
+                    df['rsi_high'] = df['rsi'].rolling(window=min(divergence_period*2+1, len(df)), center=True).apply(
+                        lambda x: x[min(divergence_period, len(x)-1)] == max(x), raw=True
+                    ).fillna(0).astype(bool)
+                    
+                    df['rsi_low'] = df['rsi'].rolling(window=min(divergence_period*2+1, len(df)), center=True).apply(
+                        lambda x: x[min(divergence_period, len(x)-1)] == min(x), raw=True
+                    ).fillna(0).astype(bool)
+                    
+                    # Initialize divergence columns
+                    df['bullish_divergence'] = False
+                    df['bearish_divergence'] = False
+                    
+                    # Detect bullish divergence (price making lower lows but RSI making higher lows)
+                    for i in range(divergence_period, len(df)-divergence_period):
+                        if df['price_low'].iloc[i]:
+                            # Look back for previous low
+                            for j in range(max(0, i-divergence_period), i):
+                                if df['price_low'].iloc[j]:
+                                    # Check for bullish divergence
+                                    if df['close'].iloc[i] < df['close'].iloc[j] and df['rsi'].iloc[i] > df['rsi'].iloc[j]:
+                                        df.loc[df.index[i], 'bullish_divergence'] = True
+                                    break
+                    
+                    # Detect bearish divergence (price making higher highs but RSI making lower highs)
+                    for i in range(divergence_period, len(df)-divergence_period):
+                        if df['price_high'].iloc[i]:
+                            # Look back for previous high
+                            for j in range(max(0, i-divergence_period), i):
+                                if df['price_high'].iloc[j]:
+                                    # Check for bearish divergence
+                                    if df['close'].iloc[i] > df['close'].iloc[j] and df['rsi'].iloc[i] < df['rsi'].iloc[j]:
+                                        df.loc[df.index[i], 'bearish_divergence'] = True
+                                    break
+                except Exception as e:
+                    logger.warning(f"Error calculating divergence for {symbol} {timeframe}: {str(e)}")
+                    # If divergence calculation fails, disable it for this run
+                    use_divergence = False
+                    df['bullish_divergence'] = False
+                    df['bearish_divergence'] = False
             
             # Store calculated indicators
             indicators = {}
@@ -229,8 +246,18 @@ class RSIStrategy(BaseStrategy):
             # Get latest data point
             df = self.data[symbol][timeframe]
             
-            if df.empty or 'rsi' not in df.columns:
-                logger.warning(f"Insufficient data for {symbol} {timeframe}")
+            if df.empty:
+                logger.warning(f"No data for {symbol} {timeframe}")
+                return signal
+                
+            # Ensure indicators are calculated
+            if not self.calculate_indicators(symbol, timeframe):
+                logger.warning(f"Failed to calculate indicators for {symbol} {timeframe}")
+                return signal
+                
+            # Check if required indicators exist
+            if 'rsi' not in df.columns or 'rsi_smooth' not in df.columns:
+                logger.warning(f"Required indicators not found for {symbol} {timeframe}")
                 return signal
                 
             # Extract parameters
@@ -245,8 +272,12 @@ class RSIStrategy(BaseStrategy):
             use_divergence = self.params['use_divergence']
             
             # Get latest indicators
+            if len(df) < 2:
+                logger.warning(f"Not enough data points for signal generation for {symbol} {timeframe}")
+                return signal
+                
             latest = df.iloc[-1]
-            previous = df.iloc[-2] if len(df) > 1 else None
+            previous = df.iloc[-2]
             
             # Check if position is active
             position = self.positions[symbol]
@@ -264,11 +295,11 @@ class RSIStrategy(BaseStrategy):
                     signal_strength += 1
                     
                 # Bullish divergence (if enabled)
-                if use_divergence and latest.get('bullish_divergence', False):
+                if use_divergence and 'bullish_divergence' in latest and latest['bullish_divergence']:
                     signal_strength += 1
                 
                 # RSI crossing back above oversold level (stronger bullish signal)
-                if previous is not None and previous['rsi_smooth'] < oversold and latest['rsi_smooth'] >= oversold:
+                if previous['rsi_smooth'] < oversold and latest['rsi_smooth'] >= oversold:
                     signal_strength += 1
                     
                 # Strong bullish signal
@@ -290,38 +321,40 @@ class RSIStrategy(BaseStrategy):
                     if trailing_stop > 0:
                         signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
                         
-                # RSI above overbought level (bearish)
-                signal_strength = 0  # Reset signal strength
-                
-                if latest['rsi_smooth'] > overbought:
-                    signal_strength += 1
+                # Check bearish signals only if we didn't already generate a bullish signal
+                if signal['action'] is None:
+                    # RSI above overbought level (bearish)
+                    signal_strength = 0  # Reset signal strength
                     
-                # Bearish divergence (if enabled)
-                if use_divergence and latest.get('bearish_divergence', False):
-                    signal_strength += 1
-                
-                # RSI crossing back below overbought level (stronger bearish signal)
-                if previous is not None and previous['rsi_smooth'] > overbought and latest['rsi_smooth'] <= overbought:
-                    signal_strength += 1
+                    if latest['rsi_smooth'] > overbought:
+                        signal_strength += 1
+                        
+                    # Bearish divergence (if enabled)
+                    if use_divergence and 'bearish_divergence' in latest and latest['bearish_divergence']:
+                        signal_strength += 1
                     
-                # Strong bearish signal
-                if signal_strength >= 1:  # Adjust threshold as needed
-                    # Sell signal
-                    signal['action'] = 'sell'
-                    signal['price'] = current_price
-                    
-                    # Calculate position size based on risk
-                    signal['amount'] = self._calculate_position_size(
-                        symbol, current_price, risk_per_trade, stop_loss
-                    )
-                    
-                    # Add stop loss and take profit
-                    if stop_loss > 0:
-                        signal['stop_loss'] = current_price * (1 + stop_loss / 100)
-                    if take_profit > 0:
-                        signal['take_profit'] = current_price * (1 - take_profit / 100)
-                    if trailing_stop > 0:
-                        signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
+                    # RSI crossing back below overbought level (stronger bearish signal)
+                    if previous['rsi_smooth'] > overbought and latest['rsi_smooth'] <= overbought:
+                        signal_strength += 1
+                        
+                    # Strong bearish signal
+                    if signal_strength >= 1:  # Adjust threshold as needed
+                        # Sell signal
+                        signal['action'] = 'sell'
+                        signal['price'] = current_price
+                        
+                        # Calculate position size based on risk
+                        signal['amount'] = self._calculate_position_size(
+                            symbol, current_price, risk_per_trade, stop_loss
+                        )
+                        
+                        # Add stop loss and take profit
+                        if stop_loss > 0:
+                            signal['stop_loss'] = current_price * (1 + stop_loss / 100)
+                        if take_profit > 0:
+                            signal['take_profit'] = current_price * (1 - take_profit / 100)
+                        if trailing_stop > 0:
+                            signal['params']['trailingDelta'] = trailing_stop * 100  # Convert to basis points
             else:
                 # Check for exit signals
                 if position['side'] == 'long':
@@ -358,22 +391,40 @@ class RSIStrategy(BaseStrategy):
             float: Position size in base currency
         """
         try:
-            # Default position size (1 unit)
-            if risk_percent <= 0 or stop_loss_percent <= 0:
+            # Input validation
+            if not price or price <= 0:
+                logger.warning(f"Invalid price for position size calculation: {price}")
                 return 1.0
                 
-            # Calculate position size based on risk
-            account_balance = 10000.0  # Placeholder, in a real implementation, this would use the actual account balance
+            # Default position size (1 unit) if risk parameters are invalid
+            if risk_percent <= 0 or stop_loss_percent <= 0:
+                logger.info(f"Using default position size due to invalid risk parameters: risk_percent={risk_percent}, stop_loss_percent={stop_loss_percent}")
+                return 1.0
+                
+            # Get account balance from backtesting engine or use default
+            account_balance = getattr(self, 'account_size', 10000.0)
             
             # Calculate max amount to risk
-            risk_amount = account_balance * risk_percent / 100
+            risk_amount = account_balance * (risk_percent / 100)
             
             # Calculate potential loss per unit based on stop loss
             loss_per_unit = price * (stop_loss_percent / 100)
             
+            # Safeguard against division by zero or very small numbers
+            if loss_per_unit < 0.000001:
+                logger.warning(f"Stop loss too small for calculation: {loss_per_unit}")
+                return 1.0
+                
             # Calculate position size
             position_size = risk_amount / loss_per_unit
             
+            # Cap position size if it's unreasonably large
+            max_size = account_balance / price * 0.5  # Max 50% of account in a single position
+            if position_size > max_size:
+                logger.warning(f"Position size capped from {position_size} to {max_size}")
+                position_size = max_size
+                
+            logger.info(f"Calculated position size: {position_size} units at price {price}")
             return position_size
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")

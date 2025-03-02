@@ -21,6 +21,7 @@ from cryptobot.exchanges.kraken import KrakenExchange
 from cryptobot.exchanges.mexc import MexcExchange
 from cryptobot.exchanges.bybit import BybitExchange
 from cryptobot.strategies.base import BaseStrategy
+from cryptobot.strategies.machine_learning import MachineLearningStrategy  # Added import
 from cryptobot.risk_management.manager import RiskManager
 from cryptobot.data.database import DatabaseManager
 from cryptobot.data.processor import DataProcessor
@@ -28,6 +29,7 @@ from cryptobot.data.historical import HistoricalDataProvider
 from cryptobot.notifications.email import EmailNotifier
 from cryptobot.notifications.telegram import TelegramNotifier
 from cryptobot.backtesting.engine import BacktestingEngine
+from cryptobot.utils.helpers import setup_logger, timeframe_to_seconds
 from cryptobot.utils.helpers import setup_logger
 from cryptobot.config.settings import load_config, save_config
 from cryptobot.security.encryption import decrypt_api_keys
@@ -78,6 +80,9 @@ class TradingEngine:
         self.last_error = None
         self.account_balances = {}
         
+        # Data storage for fetched historical data
+        self.data: Dict[str, Dict[str, pd.DataFrame]] = {}  # Added data storage
+        
         # Performance metrics
         self.performance = {}
         
@@ -121,8 +126,8 @@ class TradingEngine:
             if risk_config and risk_config.get('enabled', True):
                 self.risk_manager = RiskManager(
                     max_positions=risk_config.get('max_positions', 5),
-                    max_daily_trades=risk_config.get('max_daily_trades', 20),
-                    max_drawdown_percent=risk_config.get('max_drawdown_percent', 20.0),
+                    max_daily_trades=risk_config.get('max_daily_trades', 40),
+                    max_drawdown_percent=risk_config.get('max_drawdown_percent',10.0),
                     max_risk_per_trade=risk_config.get('max_risk_per_trade', 2.0),
                     max_risk_per_day=risk_config.get('max_risk_per_day', 5.0),
                     max_risk_per_symbol=risk_config.get('max_risk_per_symbol', 10.0),
@@ -228,35 +233,42 @@ class TradingEngine:
                 
             # Initialize strategies
             strategies_config = self.config.get('strategies', {})
+            logger.info(f"Found {len(strategies_config)} strategies in config: {list(strategies_config.keys())}")
             for strategy_id, strategy_config in strategies_config.items():
                 if not strategy_config.get('enabled', False):
+                    logger.info(f"Strategy {strategy_id} is disabled, skipping")
                     continue
                     
-                # Get strategy parameters
                 strategy_type = strategy_config.get('type')
                 symbols = strategy_config.get('symbols', [])
                 timeframes = strategy_config.get('timeframes', ['1h'])
                 params = strategy_config.get('params', {})
                 
-                # Import the strategy class
+                logger.debug(f"Loading strategy {strategy_id} with type {strategy_type}, symbols {symbols}, timeframes {timeframes}")
+                
                 strategy_class = self._import_strategy_class(strategy_type)
                 if not strategy_class:
-                    logger.warning(f"Strategy type not found: {strategy_type}")
+                    logger.warning(f"Strategy type not found for {strategy_id}: {strategy_type}")
                     continue
                     
-                # Create the strategy instance
-                strategy = strategy_class(
-                    symbols=symbols,
-                    timeframes=timeframes,
-                    risk_manager=self.risk_manager,
-                    params=params
-                )
-                
-                self.strategies[strategy_id] = strategy
-                logger.info(f"Initialized {strategy_id} strategy")
-                
+                try:
+                    strategy = strategy_class(
+                        symbols=symbols,
+                        timeframes=timeframes,
+                        risk_manager=self.risk_manager,
+                        params=params
+                    )
+                    self.strategies[strategy_id] = strategy
+                    logger.info(f"Initialized {strategy_id} strategy as {strategy_type} (class: {strategy.__class__.__name__})")
+                except Exception as e:
+                    logger.error(f"Failed to initialize strategy {strategy_id}: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    continue
+
             logger.info("All components initialized successfully")
-            
+            logger.info(f"Loaded strategies: {list(self.strategies.keys())}")
+                            
         except Exception as e:
             logger.error(f"Error initializing components: {str(e)}")
             import traceback
@@ -294,6 +306,152 @@ class TradingEngine:
         except ImportError as e:
             logger.error(f"Error importing strategy class {strategy_type}: {str(e)}")
             return None
+        
+    async def train_ml_strategy(self, strategy_id: str) -> bool:
+        """
+        Train the machine learning model for a specific strategy.
+        
+        Args:
+            strategy_id: The ID of the strategy to train
+            
+        Returns:
+            bool: True if training was successful, False otherwise
+        """
+        if strategy_id not in self.strategies:
+            logger.error(f"Strategy {strategy_id} not found")
+            return False
+            
+        strategy = self.strategies[strategy_id]
+        if not isinstance(strategy, MachineLearningStrategy):
+            logger.error(f"Strategy {strategy_id} is not a MachineLearningStrategy")
+            return False
+            
+        try:
+            if not self.historical_data:
+                logger.error("Historical data provider not initialized")
+                return False
+
+            # Fetch historical data for all symbols and timeframes
+            lookback_period = strategy.params.get('lookback_period', 100)
+            end_date = datetime.now()
+            
+            # Calculate the lookback period in days
+            smallest_timeframe_seconds = None
+            if strategy.timeframes:
+                try:
+                    # Convert all timeframes to seconds and find the smallest
+                    valid_timeframes = []
+                    for tf in strategy.timeframes:
+                        try:
+                            tf_seconds = timeframe_to_seconds(tf)
+                            valid_timeframes.append(tf_seconds)
+                        except ValueError as ve:
+                            logger.warning(f"Invalid timeframe '{tf}' in strategy {strategy_id}: {ve}")
+                            continue
+                    if not valid_timeframes:
+                        logger.error(f"No valid timeframes found for strategy {strategy_id}")
+                        return False
+                    smallest_timeframe = min(valid_timeframes)
+                    # Estimate lookback in days (assuming smallest timeframe for safety)
+                    lookback_days = (lookback_period * smallest_timeframe) / (24 * 3600)
+                    lookback_days = max(int(lookback_days) + 1, 1)  # Ensure at least 1 day
+                except Exception as e:
+                    logger.error(f"Error calculating smallest timeframe for strategy {strategy_id}: {str(e)}")
+                    return False
+            else:
+                logger.error(f"No timeframes defined for strategy {strategy_id}")
+                return False
+
+            start_date = end_date - timedelta(days=lookback_days)
+
+            # Ensure all required data is available
+            data_available = False
+            for symbol in strategy.symbols:
+                if symbol not in self.data:
+                    self.data[symbol] = {}
+                for timeframe in strategy.timeframes:
+                    logger.info(f"Checking historical data for {symbol} {timeframe} from {start_date} to {end_date}")
+                    
+                    # First, check if we have recent CSV data
+                    csv_data = await self.historical_data.get_historical_data(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    
+                    fetch_from_api = False
+                    if not csv_data.empty:
+                        # Check if CSV data covers the required date range
+                        if csv_data.index.min() <= start_date and csv_data.index.max() >= end_date - timedelta(hours=1):
+                            # CSV data is sufficiently recent (within 1 hour of end_date)
+                            logger.info(f"Using existing CSV data for {symbol} {timeframe}")
+                            data = csv_data
+                        else:
+                            # CSV data is outdated or doesn't cover the full range
+                            logger.info(f"Existing CSV data for {symbol} {timeframe} is outdated (covers {csv_data.index.min()} to {csv_data.index.max()})")
+                            fetch_from_api = True
+                    else:
+                        # No CSV data available
+                        logger.warning(f"No CSV data found for {symbol} {timeframe}")
+                        fetch_from_api = True
+
+                    if fetch_from_api:
+                        # Fetch new data from API
+                        logger.info(f"Attempting to download data for {symbol} {timeframe} from API")
+                        data = await self.historical_data.download_historical_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            start_date=start_date,
+                            end_date=end_date,
+                            save_to_csv=True
+                        )
+                        if data.empty:
+                            logger.warning(f"No data downloaded from API for {symbol} {timeframe}")
+                            continue
+                    
+                    # Verify required columns
+                    required_columns = ['open', 'high', 'low', 'close', 'volume']
+                    missing_columns = [col for col in required_columns if col not in data.columns]
+                    if missing_columns:
+                        logger.warning(f"Missing required columns {missing_columns} in data for {symbol} {timeframe}")
+                        continue
+                    
+                    # Ensure enough data points
+                    if len(data) < lookback_period:
+                        logger.warning(f"Insufficient data for {symbol} {timeframe}: {len(data)} rows, required {lookback_period}")
+                        continue
+                    
+                    # Store the most recent data and update strategy
+                    self.data[symbol][timeframe] = data
+                    strategy.update_data(symbol, timeframe, data)
+                    data_available = True
+                    logger.info(f"Updated data for {symbol} {timeframe} with {len(data)} rows")
+
+            if not data_available:
+                logger.error("No data available for any symbol/timeframe combination. Cannot train model.")
+                return False
+
+            # Force training by resetting last_train_time
+            for symbol in strategy.last_train_time:
+                for timeframe in strategy.last_train_time[symbol]:
+                    strategy.last_train_time[symbol][timeframe] = None
+            
+            # Trigger indicator calculation and training
+            for symbol in strategy.symbols:
+                for timeframe in strategy.timeframes:
+                    if symbol in self.data and timeframe in self.data[symbol]:
+                        strategy.calculate_indicators(symbol, timeframe)
+                    else:
+                        logger.warning(f"Skipping training for {symbol} {timeframe}: No data available")
+
+            logger.info(f"Successfully trained ML model for strategy {strategy_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error training ML model for strategy {strategy_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
             
     async def start(self) -> bool:
         """
@@ -415,12 +573,17 @@ class TradingEngine:
                     for exchange_id, exchange in self.exchanges.items():
                         for strategy_id, strategy in self.strategies.items():
                             for symbol in strategy.symbols:
+                                if symbol not in self.data:
+                                    self.data[symbol] = {}
                                 for timeframe in strategy.timeframes:
                                     # Fetch OHLCV data
                                     ohlcv = await exchange.fetch_ohlcv(symbol, timeframe)
                                     
                                     # Convert to DataFrame
                                     df = self.data_processor.ohlcv_to_dataframe(ohlcv)
+                                    
+                                    # Store in self.data
+                                    self.data[symbol][timeframe] = df
                                     
                                     # Update strategy data
                                     strategy.update_data(symbol, timeframe, df)

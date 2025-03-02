@@ -74,7 +74,7 @@ class RiskManager:
         self.daily_trades_count = 0
         self.daily_risk_used = 0.0
         self.symbol_risk: Dict[str, float] = {}
-        self.last_reset_day = datetime.now().date()
+        self.last_date = None  # Last observed date, will be set on first data point
         
         # Initialize stop loss and take profit handlers
         self.stop_loss_handler = StopLossHandler()
@@ -108,10 +108,12 @@ class RiskManager:
             logger.warning(f"Kill switch active: {self.kill_switch_reason}")
             return False, signal
             
-        # Reset daily metrics if needed
-        current_date = datetime.now().date()
-        if current_date > self.last_reset_day:
-            self._reset_daily_metrics()
+        # Extract timestamp from signal
+        timestamp = self._get_timestamp(signal.get('timestamp'))
+        
+        # Check if date has changed and reset metrics if needed
+        if timestamp:
+            self._check_date_change(timestamp)
             
         # Extract signal details
         symbol = signal.get('symbol')
@@ -125,8 +127,8 @@ class RiskManager:
             return False, signal
             
         # Check trading hours restrictions
-        if not self._check_trading_hours():
-            logger.warning("Trading not allowed during current hours")
+        if timestamp and not self._check_trading_hours(timestamp):
+            logger.warning(f"Trading not allowed during current hours ({timestamp})")
             return False, signal
             
         # Check if opening new position
@@ -214,12 +216,13 @@ class RiskManager:
             logger.warning(f"Invalid action {action} for current position state")
             return False, signal
             
-    def update_account_balance(self, balance: float):
+    def update_account_balance(self, balance: float, timestamp=None):
         """
         Update account balance.
         
         Args:
             balance: New account balance
+            timestamp: Timestamp for the update (for date tracking)
         """
         previous_balance = self.account_size
         self.account_size = balance
@@ -235,6 +238,12 @@ class RiskManager:
             
         logger.info(f"Account balance updated: {balance:.2f}, Drawdown: {self.current_drawdown:.2f}%")
         
+        # Check for date change if timestamp provided
+        if timestamp:
+            timestamp_obj = self._get_timestamp(timestamp)
+            if timestamp_obj:
+                self._check_date_change(timestamp_obj)
+        
     def update_after_trade(self, trade: Trade):
         """
         Update risk metrics after a trade.
@@ -242,6 +251,12 @@ class RiskManager:
         Args:
             trade: Completed trade
         """
+        # Check for date change using trade timestamp
+        if hasattr(trade, 'timestamp') and trade.timestamp:
+            timestamp = self._get_timestamp(trade.timestamp)
+            if timestamp:
+                self._check_date_change(timestamp)
+        
         # Update metrics based on trade result
         if trade.pnl is not None:
             # Update account size
@@ -267,14 +282,21 @@ class RiskManager:
             
         logger.info(f"Risk metrics updated after trade: {trade.id}")
         
-    def check_anomalies(self, current_prices: Dict[str, float], volatility: Dict[str, float]):
+    def check_anomalies(self, current_prices: Dict[str, float], volatility: Dict[str, float], timestamp=None):
         """
         Check for market anomalies and activate kill switch if needed.
         
         Args:
             current_prices: Current prices by symbol
             volatility: Current volatility by symbol
+            timestamp: Current timestamp for date tracking
         """
+        # Check for date change if timestamp provided
+        if timestamp:
+            timestamp_obj = self._get_timestamp(timestamp)
+            if timestamp_obj:
+                self._check_date_change(timestamp_obj)
+        
         # Check for extreme volatility
         volatility_threshold = self.params.get('volatility_threshold', 5.0)  # Default 5%
         
@@ -497,16 +519,23 @@ class RiskManager:
         
         return stop_loss_cancelled or take_profit_cancelled
         
-    def check_exit_conditions(self, current_prices: Dict[str, float]) -> List[Dict[str, Any]]:
+    def check_exit_conditions(self, current_prices: Dict[str, float], timestamp=None) -> List[Dict[str, Any]]:
         """
         Check if any positions should be closed based on stop loss or take profit triggers.
         
         Args:
             current_prices: Current prices by symbol
+            timestamp: Current timestamp for date tracking
             
         Returns:
             list: List of exit signals
         """
+        # Check for date change if timestamp provided
+        if timestamp:
+            timestamp_obj = self._get_timestamp(timestamp)
+            if timestamp_obj:
+                self._check_date_change(timestamp_obj)
+        
         exit_signals = []
         
         for symbol, price in current_prices.items():
@@ -577,9 +606,80 @@ class RiskManager:
         """Reset daily risk metrics."""
         self.daily_trades_count = 0
         self.daily_risk_used = 0.0
-        self.last_reset_day = datetime.now().date()
         logger.info("Daily risk metrics reset")
         
+    def _get_timestamp(self, timestamp) -> Optional[datetime]:
+        """
+        Convert various timestamp formats to datetime.
+        
+        Args:
+            timestamp: Timestamp in various possible formats
+            
+        Returns:
+            datetime or None: Converted timestamp or None if conversion failed
+        """
+        if timestamp is None:
+            return None
+            
+        # If already a datetime, return it
+        if isinstance(timestamp, datetime):
+            return timestamp
+            
+        # Handle pandas Timestamp
+        try:
+            import pandas as pd
+            if isinstance(timestamp, pd.Timestamp):
+                return timestamp.to_pydatetime()
+        except ImportError:
+            pass
+            
+        # Handle string timestamp
+        if isinstance(timestamp, str):
+            try:
+                return datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+                
+            try:
+                import dateutil.parser
+                return dateutil.parser.parse(timestamp)
+            except (ImportError, ValueError):
+                pass
+                
+        # Handle integer/float timestamp (assume milliseconds)
+        if isinstance(timestamp, (int, float)):
+            try:
+                return datetime.fromtimestamp(timestamp / 1000)
+            except (ValueError, OverflowError):
+                try:
+                    return datetime.fromtimestamp(timestamp)
+                except (ValueError, OverflowError):
+                    pass
+                    
+        logger.warning(f"Could not parse timestamp: {timestamp}")
+        return None
+        
+    def _check_date_change(self, current_timestamp: datetime):
+        """
+        Check if the date has changed and reset daily metrics if needed.
+        
+        Args:
+            current_timestamp: Current datetime
+        """
+        if current_timestamp:
+            current_date = current_timestamp.date()
+            
+            # If this is the first timestamp we've seen, just store the date
+            if self.last_date is None:
+                self.last_date = current_date
+                return
+                
+            # If date has changed, reset daily metrics
+            if current_date > self.last_date:
+                logger.info(f"Date changed from {self.last_date} to {current_date}, resetting daily metrics")
+                self._reset_daily_metrics()
+                self.last_date = current_date
+                
     def _calculate_trade_risk(self, signal: Dict[str, Any]) -> float:
         """
         Calculate risk amount for a trade signal.
@@ -620,21 +720,22 @@ class RiskManager:
         # For this implementation, we'll use a simplified approach
         return trade.amount * trade.price * (self.default_stop_loss / 100)
         
-    def _check_trading_hours(self) -> bool:
+    def _check_trading_hours(self, timestamp: datetime) -> bool:
         """
-        Check if trading is allowed during current hours.
+        Check if trading is allowed during the hours of the given timestamp.
         
+        Args:
+            timestamp: Timestamp to check
+            
         Returns:
             bool: True if trading is allowed, False otherwise
         """
-        now = datetime.now()
-        
         # Check weekend trading
-        if not self.weekend_trading and now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        if not self.weekend_trading and timestamp.weekday() >= 5:  # 5=Saturday, 6=Sunday
             return False
             
         # Check night trading (define night as 10 PM to 6 AM)
-        if not self.night_trading and (now.hour >= 22 or now.hour < 6):
+        if not self.night_trading and (timestamp.hour >= 22 or timestamp.hour < 6):
             return False
             
         return True
@@ -651,9 +752,6 @@ class RiskManager:
         Returns:
             bool: True if correlation is acceptable, False otherwise
         """
-        # In a real implementation, this would check correlation between assets
-        # For this implementation, we'll use a simplified approach
-        
         # Count how many positions have the same direction
         same_direction_count = 0
         for pos in positions.values():
@@ -692,6 +790,7 @@ class RiskManager:
             'daily_risk_used': self.daily_risk_used,
             'kill_switch_active': self.kill_switch_active,
             'kill_switch_reason': self.kill_switch_reason,
+            'last_date': self.last_date.isoformat() if self.last_date else None,
             'stop_loss_handler': self.stop_loss_handler.to_dict() if self.stop_loss_handler else None,
             'take_profit_handler': self.take_profit_handler.to_dict() if self.take_profit_handler else None
         }

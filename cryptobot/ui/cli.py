@@ -18,6 +18,8 @@ from loguru import logger
 from cryptobot.core.engine import TradingEngine
 from cryptobot.utils.helpers import setup_logger
 from cryptobot.config.settings import load_config, save_config
+# Import the MachineLearningStrategy to check its type
+from cryptobot.strategies.machine_learning import MachineLearningStrategy
 
 
 class CryptoBotCLI(cmd.Cmd):
@@ -48,6 +50,17 @@ class CryptoBotCLI(cmd.Cmd):
         self.engine = engine
         self.config_path = engine.config_path
         
+    # Helper method to get strategies from engine status
+    def _get_strategies(self) -> Dict[str, Any]:
+        """
+        Fetch strategies from the engine's status.
+        
+        Returns:
+            dict: Strategies data
+        """
+        status = asyncio.run(self.engine.get_status())
+        return status.get('strategies', {})
+    
     def do_start(self, arg):
         """Start the trading bot."""
         if self.engine.is_running:
@@ -69,7 +82,36 @@ class CryptoBotCLI(cmd.Cmd):
     def do_status(self, arg):
         """Show current bot status."""
         status = asyncio.run(self.engine.get_status())
-        print(json.dumps(status, indent=2))
+        
+        print("\nBot Status:")
+        print("===========")
+        print(f"Running: {status.get('is_running', False)}")
+        print(f"Mode: {status.get('mode', 'unknown')}")
+        
+        print("\nStrategies:")
+        print("===========")
+        for strategy_id, strategy_data in status.get('strategies', {}).items():
+            print(f"{strategy_id}:")
+            print(f"  Type: {strategy_data.get('name', 'Unknown')}")
+            print(f"  Active: {strategy_data.get('is_active', False)}")
+            print(f"  Symbols: {', '.join(strategy_data.get('symbols', []))}")
+            print(f"  Timeframes: {', '.join(strategy_data.get('timeframes', []))}")
+            # Add last training time for ML strategies
+            if strategy_data.get('name') == "MachineLearningStrategy":
+                last_train_time = strategy_data.get('last_train_time', {})
+                if last_train_time:
+                    print("  Last Training Times:")
+                    for symbol, tf_data in last_train_time.items():
+                        for tf, train_time in tf_data.items():
+                            print(f"    {symbol} ({tf}): {train_time if train_time else 'Never trained'}")
+                else:
+                    print(f"  Last Training Time: Not available")
+            print()
+
+        print("\nExchanges:")
+        print("===========")
+        for exchange_id, exchange_data in status.get('exchanges', {}).items():
+            print(f"{exchange_id}: Connected = {exchange_data.get('connected', False)}")
         
     def do_balance(self, arg):
         """Show account balances."""
@@ -332,6 +374,68 @@ class CryptoBotCLI(cmd.Cmd):
         except Exception as e:
             print(f"Error running backtest: {str(e)}")
         
+    def do_train_ml(self, arg):
+        """Train machine learning models for a specific strategy or all ML strategies."""
+        args = arg.split()
+        
+        if not args:
+            print("Usage: train_ml [<strategy_id>]")
+            print("\nExamples:")
+            print("  train_ml  # Train all ML strategies")
+            print("  train_ml ml_strategy_1  # Train a specific ML strategy")
+            return
+            
+        strategy_id = args[0] if args else None
+        
+        try:
+            # Get all strategies from the engine
+            strategies = self._get_strategies()
+            logger.info(f"Strategies found in engine: {list(strategies.keys())}")
+            
+            # Log the details of each strategy's to_dict() output
+            for sid, sdata in strategies.items():
+                logger.debug(f"Strategy {sid} data: {sdata}")
+                logger.debug(f"Strategy {sid} name field: {sdata.get('name')}")
+            
+            # Filter ML strategies
+            ml_strategies = {
+                sid: sdata for sid, sdata in strategies.items()
+                if sdata.get('name') == "MachineLearningStrategy"
+            }
+            logger.info(f"MachineLearningStrategy instances found: {list(ml_strategies.keys())}")
+            
+            if not ml_strategies:
+                print("No MachineLearningStrategy instances found")
+                return
+                
+            if strategy_id:
+                # Train a specific strategy
+                if strategy_id not in ml_strategies:
+                    print(f"Strategy {strategy_id} not found or is not a MachineLearningStrategy")
+                    return
+                    
+                print(f"Training ML model for strategy {strategy_id}...")
+                success = asyncio.run(self.engine.train_ml_strategy(strategy_id))
+                if success:
+                    print(f"Successfully trained ML model for {strategy_id}")
+                else:
+                    print(f"Failed to train ML model for {strategy_id}")
+            else:
+                # Train all ML strategies
+                print("Training ML models for all MachineLearningStrategy instances...")
+                for sid in ml_strategies.keys():
+                    print(f"Training ML model for strategy {sid}...")
+                    success = asyncio.run(self.engine.train_ml_strategy(sid))
+                    if success:
+                        print(f"Successfully trained ML model for {sid}")
+                    else:
+                        print(f"Failed to train ML model for {sid}")
+                        
+        except Exception as e:
+            print(f"Error training ML model: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+        
     def do_settings(self, arg):
         """View or change settings."""
         args = arg.split()
@@ -365,6 +469,7 @@ class CryptoBotCLI(cmd.Cmd):
             print("  markets         - Show available markets")
             print("  download_data   - Download historical data for backtesting")
             print("  backtest        - Run a backtest")
+            print("  train_ml        - Train machine learning models for a strategy")
             print("  settings        - View or change settings")
             print("  help            - Show this help message")
             print("  exit            - Exit the CLI")
@@ -387,6 +492,14 @@ def run_command(args):
     Args:
         args: Command-line arguments
     """
+    # Log the config path being used
+    logger.info(f"Using config path: {args.config}")
+    
+    # Validate config path exists
+    if not os.path.exists(args.config):
+        logger.error(f"Configuration file not found at {args.config}")
+        raise FileNotFoundError(f"Configuration file not found at {args.config}")
+    
     # Initialize trading engine
     engine = TradingEngine(
         config_path=args.config,
@@ -396,29 +509,22 @@ def run_command(args):
     
     # Execute command
     if args.command == "run":
-        # Run the bot
         asyncio.run(engine.start())
         try:
-            # Keep running until interrupted
             asyncio.run(asyncio.sleep(float('inf')))
         except KeyboardInterrupt:
             print("\nStopping bot...")
             asyncio.run(engine.stop())
     elif args.command == "cli":
-        # Start interactive CLI
         cli = CryptoBotCLI(engine)
         cli.cmdloop()
     elif args.command == "backtest":
-        # Run backtest
         try:
-            # Parse dates
             start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
             end_date = datetime.strptime(args.end_date, '%Y-%m-%d') if args.end_date else datetime.now()
             
-            # Check if auto-download is requested
             if args.auto_download:
                 from cryptobot.scripts.download_historical_data import download_strategy_data
-                
                 print(f"Downloading data for {args.strategy} from {start_date.date()} to {end_date.date()}...")
                 await_download_strategy_data = download_strategy_data(
                     config_path=args.config,
@@ -430,34 +536,27 @@ def run_command(args):
                 asyncio.run(await_download_strategy_data)
             
             print(f"Running backtest for {args.strategy} from {start_date.date()} to {end_date.date()} with timeframe {args.timeframe}...")
-            
-            # Run backtest
             results = asyncio.run(engine.run_backtest(
                 strategy_id=args.strategy,
                 start_date=start_date,
                 end_date=end_date,
                 timeframe=args.timeframe
             ))
-            
             print("\nBacktest Results:")
             print("================")
             print(json.dumps(results, indent=2))
-            
         except ValueError:
             print("Invalid date format. Use YYYY-MM-DD")
         except Exception as e:
             print(f"Error running backtest: {str(e)}")
     elif args.command == "download-data":
-        # Download historical data
         try:
             from cryptobot.scripts.download_historical_data import download_data, download_strategy_data, batch_download
             
-            # Parse dates
             start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
             end_date = datetime.strptime(args.end_date, '%Y-%m-%d') if args.end_date else datetime.now()
             
             if args.strategy:
-                # Download data for strategy
                 print(f"Downloading data for strategy {args.strategy} from {start_date.date()} to {end_date.date()}...")
                 asyncio.run(download_strategy_data(
                     config_path=args.config,
@@ -466,12 +565,9 @@ def run_command(args):
                     end_date=end_date
                 ))
             else:
-                # Download data for symbols
                 symbols = args.symbols.split(',') if args.symbols else ['BTC/USDT', 'ETH/USDT', 'BNB/USDT']
                 timeframes = args.timeframes.split(',') if args.timeframes else ['1h', '4h', '1d']
-                
                 print(f"Downloading data for {len(symbols)} symbols from {start_date.date()} to {end_date.date()}...")
-                
                 if args.batch:
                     asyncio.run(batch_download(
                         symbols=symbols,
@@ -489,9 +585,7 @@ def run_command(args):
                         end_date=end_date,
                         data_dir=args.data_dir
                     ))
-                    
             print("Data download completed")
-            
         except ValueError:
             print("Invalid date format. Use YYYY-MM-DD")
         except Exception as e:
@@ -499,11 +593,9 @@ def run_command(args):
             import traceback
             print(traceback.format_exc())
     elif args.command == "status":
-        # Show status
         status = asyncio.run(engine.get_status())
         print(json.dumps(status, indent=2))
     elif args.command == "init":
-        # Initialize configuration
         config = load_config(args.config)
         save_config(config, args.config)
         print(f"Initialized configuration: {args.config}")
