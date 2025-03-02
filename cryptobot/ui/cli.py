@@ -1,734 +1,593 @@
 """
 Command Line Interface
-=====================
-CLI for controlling and monitoring the trading bot.
+====================
+Command-line interface for the trading bot.
 """
 
 import os
 import sys
+import cmd
 import json
-import time
 import asyncio
 import argparse
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional, Any
 
-import pandas as pd
-from tabulate import tabulate
 from loguru import logger
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.shortcuts import clear
-from prompt_toolkit.styles import Style
-from prompt_toolkit.formatted_text import HTML
 
 from cryptobot.core.engine import TradingEngine
 from cryptobot.utils.helpers import setup_logger
+from cryptobot.config.settings import load_config, save_config
 
 
-class CLI:
-    """Command Line Interface for the trading bot."""
+class CryptoBotCLI(cmd.Cmd):
+    """
+    Interactive command-line interface for the trading bot.
+    """
     
-    def __init__(self, trading_engine: TradingEngine):
+    intro = """
+    ================================================
+     CryptoBot - Cryptocurrency Trading Bot
+    ================================================
+    
+    Type 'help' or '?' to list commands.
+    Type 'start' to start the trading bot.
+    Type 'exit' to quit.
+    """
+    
+    prompt = 'cryptobot> '
+    
+    def __init__(self, engine: TradingEngine):
         """
         Initialize the CLI.
         
         Args:
-            trading_engine: TradingEngine instance
+            engine: Trading engine instance
         """
-        self.trading_engine = trading_engine
-        self.running = False
+        super().__init__()
+        self.engine = engine
+        self.config_path = engine.config_path
         
-        # Setup prompt session
-        self.commands = [
-            'start', 'stop', 'status', 'balance', 'positions', 'trades',
-            'strategies', 'markets', 'backtest', 'settings', 'help', 'exit'
-        ]
-        self.command_completer = WordCompleter(self.commands)
-        self.session = PromptSession(completer=self.command_completer)
-        
-        # Setup prompt style
-        self.style = Style.from_dict({
-            'prompt': 'fg:ansigreen bold',
-            'command': 'fg:ansibrightcyan',
-            'param': 'fg:ansiyellow',
-            'error': 'fg:ansired bold',
-            'success': 'fg:ansigreen',
-            'warning': 'fg:ansiyellow',
-            'info': 'fg:ansiblue',
-        })
-        
-        logger.info("CLI initialized")
-        
-    async def start(self):
-        """Start the CLI."""
-        self.running = True
-        clear()
-        self._print_header()
-        
-        while self.running:
-            try:
-                # Get command from user
-                command_input = await self.session.prompt_async(
-                    HTML('<prompt>cryptobot></prompt> '),
-                    style=self.style
-                )
-                
-                # Parse command
-                command_parts = command_input.strip().split()
-                if not command_parts:
-                    continue
-                    
-                command = command_parts[0].lower()
-                args = command_parts[1:]
-                
-                # Process command
-                if command == 'exit':
-                    await self._handle_exit()
-                    break
-                elif command == 'help':
-                    self._handle_help()
-                elif command == 'start':
-                    await self._handle_start()
-                elif command == 'stop':
-                    await self._handle_stop()
-                elif command == 'status':
-                    await self._handle_status()
-                elif command == 'balance':
-                    await self._handle_balance()
-                elif command == 'positions':
-                    await self._handle_positions()
-                elif command == 'trades':
-                    await self._handle_trades(args)
-                elif command == 'strategies':
-                    await self._handle_strategies(args)
-                elif command == 'markets':
-                    await self._handle_markets(args)
-                elif command == 'backtest':
-                    await self._handle_backtest(args)
-                elif command == 'settings':
-                    await self._handle_settings(args)
-                else:
-                    print(f"Unknown command: {command}. Type 'help' for available commands.")
-                
-            except KeyboardInterrupt:
-                await self._handle_exit()
-                break
-            except Exception as e:
-                logger.error(f"Error processing command: {str(e)}")
-                print(f"Error: {str(e)}")
-                
-    async def _handle_exit(self):
-        """Handle exit command."""
-        if await self._confirm_action("Are you sure you want to exit?"):
-            # Stop the bot if it's running
-            status = await self.trading_engine.get_status()
-            if status.get("is_running", False):
-                print("Stopping trading bot before exit...")
-                await self.trading_engine.stop()
-                
-            self.running = False
-            print("Exiting CLI. Goodbye!")
-            
-    def _handle_help(self):
-        """Handle help command."""
-        help_text = """
-Available Commands:
-------------------
-start       - Start the trading bot
-stop        - Stop the trading bot
-status      - Show current bot status
-balance     - Show account balances
-positions   - Show active positions
-trades      - Show recent trades
-             Options: --limit=N, --strategy=NAME
-strategies  - List or manage strategies
-             Sub-commands: list, info NAME, enable NAME, disable NAME
-markets     - Show available markets
-             Options: --exchange=NAME
-backtest    - Run a backtest
-             Required: --strategy=NAME --start=YYYY-MM-DD
-             Optional: --end=YYYY-MM-DD --timeframe=1h
-settings    - View or change settings
-             Sub-commands: view, set PARAM VALUE
-help        - Show this help message
-exit        - Exit the CLI
-        """
-        print(help_text)
-        
-    async def _handle_start(self):
-        """Handle start command."""
-        status = await self.trading_engine.get_status()
-        if status.get("is_running", False):
-            print("Trading bot is already running.")
+    def do_start(self, arg):
+        """Start the trading bot."""
+        if self.engine.is_running:
+            print("Trading bot is already running")
             return
             
         print("Starting trading bot...")
-        success = await self.trading_engine.start()
-        if success:
-            print("Trading bot started successfully.")
-        else:
-            print("Failed to start trading bot. Check logs for details.")
-            
-    async def _handle_stop(self):
-        """Handle stop command."""
-        status = await self.trading_engine.get_status()
-        if not status.get("is_running", False):
-            print("Trading bot is not running.")
+        asyncio.run(self.engine.start())
+        
+    def do_stop(self, arg):
+        """Stop the trading bot."""
+        if not self.engine.is_running:
+            print("Trading bot is not running")
             return
             
-        if await self._confirm_action("Are you sure you want to stop the trading bot?"):
-            print("Stopping trading bot...")
-            success = await self.trading_engine.stop()
-            if success:
-                print("Trading bot stopped successfully.")
+        print("Stopping trading bot...")
+        asyncio.run(self.engine.stop())
+        
+    def do_status(self, arg):
+        """Show current bot status."""
+        status = asyncio.run(self.engine.get_status())
+        print(json.dumps(status, indent=2))
+        
+    def do_balance(self, arg):
+        """Show account balances."""
+        status = asyncio.run(self.engine.get_status())
+        
+        print("\nAccount Balances:")
+        print("=================")
+        
+        for exchange_id, balance in status.get('account_balances', {}).items():
+            print(f"\n{exchange_id.upper()}:")
+            
+            if 'info' in balance and 'balances' in balance['info']:
+                # For Binance
+                balances = balance['info']['balances']
+                for asset in balances:
+                    if float(asset['free']) > 0 or float(asset['locked']) > 0:
+                        print(f"  {asset['asset']}: Free = {asset['free']}, Locked = {asset['locked']}")
             else:
-                print("Failed to stop trading bot. Check logs for details.")
-                
-    async def _handle_status(self):
-        """Handle status command."""
-        print("Fetching trading bot status...")
-        status = await self.trading_engine.get_status()
+                # Generic format
+                for currency, data in balance.items():
+                    if isinstance(data, dict) and ('free' in data or 'total' in data):
+                        free = data.get('free', 0)
+                        used = data.get('used', 0)
+                        total = data.get('total', 0)
+                        
+                        if float(free) > 0 or float(used) > 0:
+                            print(f"  {currency}: Free = {free}, Used = {used}, Total = {total}")
         
-        # Display basic status
-        print("\n=== Bot Status ===")
-        print(f"Mode: {status.get('mode', 'Unknown')}")
-        print(f"Running: {'Yes' if status.get('is_running', False) else 'No'}")
-        if status.get('start_time'):
-            print(f"Start time: {status.get('start_time')}")
-            print(f"Uptime: {status.get('uptime', 'Unknown')}")
-        print(f"Last heartbeat: {status.get('last_heartbeat', 'Unknown')}")
-        if status.get('last_error'):
-            print(f"Last error: {status.get('last_error')}")
+    def do_positions(self, arg):
+        """Show active positions."""
+        status = asyncio.run(self.engine.get_status())
+        
+        print("\nActive Positions:")
+        print("================")
+        
+        for strategy_id, strategy_data in status.get('strategies', {}).items():
+            positions = strategy_data.get('positions', {})
+            active_positions = {symbol: pos for symbol, pos in positions.items() if pos.get('is_active', False)}
             
-        # Display exchange status
-        print("\n=== Exchange Status ===")
-        for exchange_id, exchange_status in status.get('exchanges', {}).items():
-            print(f"{exchange_id}: {'Connected' if exchange_status.get('connected', False) else 'Disconnected'}")
-            print(f"  API calls: {exchange_status.get('api_calls', 0)}")
+            if active_positions:
+                print(f"\nStrategy: {strategy_id}")
+                for symbol, position in active_positions.items():
+                    side = position.get('side', 'unknown')
+                    entry_price = position.get('entry_price', 0)
+                    amount = position.get('amount', 0)
+                    entry_time = position.get('entry_time', '')
+                    
+                    print(f"  {symbol}: {side.upper()} {amount} @ {entry_price} (entered: {entry_time})")
             
-        # Display active strategies
-        print("\n=== Active Strategies ===")
-        active_strategies = 0
-        for strategy_id, strategy_info in status.get('strategies', {}).items():
-            if strategy_info.get('is_active', False):
-                active_strategies += 1
-                print(f"- {strategy_id} ({strategy_info.get('name', 'Unknown')})")
-                
-        if active_strategies == 0:
-            print("No active strategies")
+    def do_trades(self, arg):
+        """Show recent trades."""
+        status = asyncio.run(self.engine.get_status())
+        
+        print("\nRecent Trades:")
+        print("=============")
+        
+        for strategy_id, strategy_data in status.get('strategies', {}).items():
+            performance = strategy_data.get('performance', {})
+            trade_count = performance.get('total_trades', 0)
             
-        # Display risk management status
-        if status.get('risk_management'):
-            print("\n=== Risk Management ===")
-            risk_info = status.get('risk_management', {})
-            print(f"Account size: ${risk_info.get('account_size', 0):.2f}")
-            print(f"Current drawdown: {risk_info.get('current_drawdown', 0):.2f}%")
-            print(f"Daily trades count: {risk_info.get('daily_trades_count', 0)}/{risk_info.get('max_daily_trades', 0)}")
-            if risk_info.get('kill_switch_active', False):
-                print(f"Kill switch: ACTIVE - {risk_info.get('kill_switch_reason', 'Unknown')}")
-                
-    async def _handle_balance(self):
-        """Handle balance command."""
-        print("Fetching account balances...")
-        status = await self.trading_engine.get_status()
-        account_balances = status.get('account_balances', {})
+            if trade_count > 0:
+                print(f"\nStrategy: {strategy_id}")
+                print(f"  Total Trades: {trade_count}")
+                print(f"  Win Rate: {performance.get('win_rate', 0):.2f}%")
+                print(f"  Avg Profit: {performance.get('avg_profit', 0):.2f}%")
+                print(f"  Total PnL: {performance.get('total_pnl', 0):.2f}")
         
-        if not account_balances:
-            print("No account balance information available.")
-            return
-            
-        # Process and display balances
-        for exchange_id, balance_info in account_balances.items():
-            print(f"\n=== {exchange_id} Balance ===")
-            
-            if "total" in balance_info:
-                # CCXT standard balance format
-                assets = []
-                for currency, amount in balance_info.get("total", {}).items():
-                    free = balance_info.get("free", {}).get(currency, 0)
-                    used = balance_info.get("used", {}).get(currency, 0)
-                    if amount > 0:
-                        assets.append({
-                            "Asset": currency,
-                            "Total": amount,
-                            "Free": free,
-                            "In Use": used
-                        })
-                
-                if assets:
-                    print(tabulate(assets, headers="keys", tablefmt="pretty"))
-                else:
-                    print("No assets with non-zero balance.")
-            elif "info" in balance_info and "balances" in balance_info["info"]:
-                # Binance-specific balance format
-                assets = []
-                for asset in balance_info["info"]["balances"]:
-                    free = float(asset["free"])
-                    locked = float(asset["locked"])
-                    total = free + locked
-                    if total > 0:
-                        assets.append({
-                            "Asset": asset["asset"],
-                            "Total": total,
-                            "Free": free,
-                            "Locked": locked
-                        })
-                
-                if assets:
-                    print(tabulate(assets, headers="keys", tablefmt="pretty"))
-                else:
-                    print("No assets with non-zero balance.")
-            else:
-                print("Unknown balance format.")
-                
-    async def _handle_positions(self):
-        """Handle positions command."""
-        print("Fetching active positions...")
-        status = await self.trading_engine.get_status()
+    def do_strategies(self, arg):
+        """List or manage strategies."""
+        args = arg.split()
         
-        active_positions = []
-        for strategy_id, strategy_info in status.get('strategies', {}).items():
-            for symbol, position in strategy_info.get('positions', {}).items():
-                if position.get('is_active', False):
-                    active_positions.append({
-                        "Symbol": symbol,
-                        "Strategy": strategy_id,
-                        "Side": position.get('side', '').title(),
-                        "Entry Price": position.get('entry_price', 0),
-                        "Amount": position.get('amount', 0),
-                        "Entry Time": position.get('entry_time', '')
-                    })
-        
-        if active_positions:
-            print("\n=== Active Positions ===")
-            print(tabulate(active_positions, headers="keys", tablefmt="pretty"))
-        else:
-            print("No active positions.")
-            
-    async def _handle_trades(self, args):
-        """
-        Handle trades command.
-        
-        Args:
-            args: Command arguments
-        """
-        # Parse arguments
-        limit = 10  # Default limit
-        strategy = None
-        
-        for arg in args:
-            if arg.startswith('--limit='):
-                try:
-                    limit = int(arg.split('=')[1])
-                except ValueError:
-                    print("Invalid limit value. Using default limit of 10.")
-            elif arg.startswith('--strategy='):
-                strategy = arg.split('=')[1]
-        
-        print(f"Fetching last {limit} trades{' for strategy ' + strategy if strategy else ''}...")
-        status = await self.trading_engine.get_status()
-        
-        all_trades = []
-        for strategy_id, strategy_info in status.get('strategies', {}).items():
-            if strategy and strategy_id != strategy:
-                continue
-                
-            # In a real implementation, we would get the actual trade history
-            for trade in strategy_info.get('trade_history', []):
-                trade_info = {
-                    "Symbol": trade.get('symbol', ''),
-                    "Strategy": strategy_id,
-                    "Side": trade.get('side', '').title(),
-                    "Price": trade.get('price', 0),
-                    "Amount": trade.get('amount', 0),
-                    "Time": trade.get('timestamp', ''),
-                    "PnL": trade.get('pnl', 0),
-                    "PnL %": trade.get('pnl_percent', 0)
-                }
-                all_trades.append(trade_info)
-        
-        # Sort by timestamp (most recent first)
-        all_trades = sorted(all_trades, key=lambda x: x.get("Time", ""), reverse=True)
-        
-        # Limit to the requested number of trades
-        all_trades = all_trades[:limit]
-        
-        if all_trades:
-            print("\n=== Recent Trades ===")
-            print(tabulate(all_trades, headers="keys", tablefmt="pretty"))
-        else:
-            print("No trade history found.")
-            
-    async def _handle_strategies(self, args):
-        """
-        Handle strategies command.
-        
-        Args:
-            args: Command arguments
-        """
         if not args:
-            # Default: list all strategies
-            await self._list_strategies()
-            return
+            # List all strategies
+            status = asyncio.run(self.engine.get_status())
             
-        subcommand = args[0].lower()
-        
-        if subcommand == 'list':
-            await self._list_strategies()
-        elif subcommand == 'info' and len(args) > 1:
-            await self._show_strategy_info(args[1])
-        elif subcommand == 'enable' and len(args) > 1:
-            await self._enable_strategy(args[1])
-        elif subcommand == 'disable' and len(args) > 1:
-            await self._disable_strategy(args[1])
+            print("\nAvailable Strategies:")
+            print("====================")
+            
+            for strategy_id, strategy_data in status.get('strategies', {}).items():
+                active = "ACTIVE" if strategy_data.get('is_active', False) else "INACTIVE"
+                print(f"  {strategy_id} ({active})")
+                print(f"    Type: {strategy_data.get('name', 'Unknown')}")
+                print(f"    Symbols: {', '.join(strategy_data.get('symbols', []))}")
+                print(f"    Timeframes: {', '.join(strategy_data.get('timeframes', []))}")
+                print()
         else:
-            print("Invalid strategy subcommand. Use: list, info NAME, enable NAME, disable NAME")
+            # Manage a specific strategy
+            command = args[0]
+            strategy_id = args[1] if len(args) > 1 else None
             
-    async def _list_strategies(self):
-        """List all available strategies."""
-        print("Fetching strategies...")
-        status = await self.trading_engine.get_status()
-        
-        strategies = []
-        for strategy_id, strategy_info in status.get('strategies', {}).items():
-            strategies.append({
-                "ID": strategy_id,
-                "Name": strategy_info.get('name', 'Unknown'),
-                "Symbols": ', '.join(strategy_info.get('symbols', [])),
-                "Timeframes": ', '.join(strategy_info.get('timeframes', [])),
-                "Active": 'Yes' if strategy_info.get('is_active', False) else 'No',
-                "Trades": strategy_info.get('trade_count', 0)
-            })
-        
-        if strategies:
-            print("\n=== Available Strategies ===")
-            print(tabulate(strategies, headers="keys", tablefmt="pretty"))
-        else:
-            print("No strategies configured.")
-            
-    async def _show_strategy_info(self, strategy_id):
-        """
-        Show detailed information about a strategy.
-        
-        Args:
-            strategy_id: Strategy identifier
-        """
-        print(f"Fetching information for strategy {strategy_id}...")
-        status = await self.trading_engine.get_status()
-        
-        if strategy_id not in status.get('strategies', {}):
-            print(f"Strategy {strategy_id} not found.")
-            return
-            
-        strategy_info = status['strategies'][strategy_id]
-        
-        print(f"\n=== Strategy: {strategy_id} ===")
-        print(f"Name: {strategy_info.get('name', 'Unknown')}")
-        print(f"Active: {'Yes' if strategy_info.get('is_active', False) else 'No'}")
-        print(f"Symbols: {', '.join(strategy_info.get('symbols', []))}")
-        print(f"Timeframes: {', '.join(strategy_info.get('timeframes', []))}")
-        
-        # Parameters
-        print("\nParameters:")
-        params = strategy_info.get('params', {})
-        for param, value in params.items():
-            print(f"  {param}: {value}")
-            
-        # Performance
-        print("\nPerformance:")
-        perf = strategy_info.get('performance', {})
-        print(f"  Total trades: {perf.get('total_trades', 0)}")
-        print(f"  Win rate: {perf.get('win_rate', 0):.2f}%")
-        print(f"  Average profit: {perf.get('avg_profit', 0):.2f}%")
-        print(f"  Total PnL: {perf.get('total_pnl', 0):.2f}")
-        print(f"  Profit factor: {perf.get('profit_factor', 0):.2f}")
-        
-    async def _enable_strategy(self, strategy_id):
-        """
-        Enable a strategy.
-        
-        Args:
-            strategy_id: Strategy identifier
-        """
-        print(f"Enabling strategy {strategy_id}...")
-        # In a real implementation, this would update the strategy in the engine
-        # For now, we'll just print a message
-        print(f"Strategy {strategy_id} enabled. (Not actually implemented in this demo)")
-        
-    async def _disable_strategy(self, strategy_id):
-        """
-        Disable a strategy.
-        
-        Args:
-            strategy_id: Strategy identifier
-        """
-        print(f"Disabling strategy {strategy_id}...")
-        # In a real implementation, this would update the strategy in the engine
-        # For now, we'll just print a message
-        print(f"Strategy {strategy_id} disabled. (Not actually implemented in this demo)")
-        
-    async def _handle_markets(self, args):
-        """
-        Handle markets command.
-        
-        Args:
-            args: Command arguments
-        """
-        # Parse arguments
-        exchange = None
-        
-        for arg in args:
-            if arg.startswith('--exchange='):
-                exchange = arg.split('=')[1]
-        
-        print(f"Fetching available markets{' for exchange ' + exchange if exchange else ''}...")
-        
-        if not self.trading_engine.exchanges:
-            print("No exchanges connected.")
-            return
-            
-        for exchange_id, exchange_instance in self.trading_engine.exchanges.items():
-            if exchange and exchange_id != exchange:
-                continue
+            if not strategy_id:
+                print("Strategy ID is required")
+                return
                 
-            print(f"\n=== {exchange_id} Markets ===")
+            config = load_config(self.config_path)
+            strategies = config.get('strategies', {})
             
-            # In a real implementation, we would get the actual markets
-            # For now, we'll just show a subset of common symbols
-            symbols = exchange_instance.get_supported_symbols()
-            if not symbols:
-                symbols = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "XRP/USDT"]
+            if strategy_id not in strategies:
+                print(f"Strategy {strategy_id} not found")
+                return
                 
-            # Limit to first 20 symbols
-            if len(symbols) > 20:
-                print(f"Showing first 20 of {len(symbols)} symbols")
-                symbols = symbols[:20]
-                
-            symbol_data = []
-            for symbol in symbols:
-                symbol_data.append({"Symbol": symbol})
-                
-            print(tabulate(symbol_data, headers="keys", tablefmt="pretty"))
+            if command == 'enable':
+                strategies[strategy_id]['enabled'] = True
+                save_config(config, self.config_path)
+                print(f"Strategy {strategy_id} enabled")
+            elif command == 'disable':
+                strategies[strategy_id]['enabled'] = False
+                save_config(config, self.config_path)
+                print(f"Strategy {strategy_id} disabled")
+            else:
+                print(f"Unknown command: {command}")
+        
+    def do_markets(self, arg):
+        """Show available markets."""
+        status = asyncio.run(self.engine.get_status())
+        
+        print("\nAvailable Markets:")
+        print("=================")
+        
+        for exchange_id, exchange_data in status.get('exchanges', {}).items():
+            print(f"\n{exchange_id.upper()}:")
             
-    async def _handle_backtest(self, args):
-        """
-        Handle backtest command.
+            # In a real implementation, we would get symbols from the exchange
+            # For now, just show some examples
+            print("  BTC/USDT")
+            print("  ETH/USDT")
+            print("  BNB/USDT")
+    
+    def do_download_data(self, arg):
+        """Download historical data for backtesting."""
+        from cryptobot.scripts.download_historical_data import download_data, download_strategy_data, batch_download
         
-        Args:
-            args: Command arguments
-        """
-        # Parse arguments
-        strategy = None
-        start_date = None
-        end_date = None
-        timeframe = "1h"  # Default timeframe
+        args = arg.split()
         
-        for arg in args:
-            if arg.startswith('--strategy='):
-                strategy = arg.split('=')[1]
-            elif arg.startswith('--start='):
-                start_date = arg.split('=')[1]
-            elif arg.startswith('--end='):
-                end_date = arg.split('=')[1]
-            elif arg.startswith('--timeframe='):
-                timeframe = arg.split('=')[1]
-        
-        if not strategy or not start_date:
-            print("Required parameters missing. Usage: backtest --strategy=NAME --start=YYYY-MM-DD [--end=YYYY-MM-DD] [--timeframe=1h]")
+        if len(args) < 1:
+            print("Usage: download_data <strategy_id or symbols> <start_date> [<end_date>] [--batch]")
+            print("\nExamples:")
+            print("  download_data ma_crossover 2023-01-01 2023-12-31")
+            print("  download_data BTC/USDT,ETH/USDT 2023-01-01 2023-12-31 --batch")
             return
             
         try:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") if end_date else datetime.now()
+            # Parse arguments
+            first_arg = args[0]
+            start_date = args[1] if len(args) > 1 else None
+            end_date = args[2] if len(args) > 2 else None
+            use_batch = "--batch" in args
+            
+            if not start_date:
+                print("Start date is required")
+                return
+                
+            # Parse dates
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d') if end_date else datetime.now()
+            
+            # Check if first argument is a strategy or symbols
+            config = load_config(self.config_path)
+            strategies = config.get('strategies', {})
+            
+            if first_arg in strategies:
+                # Download data for strategy
+                print(f"Downloading data for strategy {first_arg} from {start_date} to {end_date or 'now'}...")
+                asyncio.run(download_strategy_data(
+                    config_path=self.config_path,
+                    strategy_id=first_arg,
+                    start_date=start_date_obj,
+                    end_date=end_date_obj
+                ))
+            else:
+                # Treat first argument as symbols
+                symbols = first_arg.split(',')
+                timeframes = ['1h', '4h', '1d']  # Default timeframes
+                
+                print(f"Downloading data for {len(symbols)} symbols from {start_date} to {end_date or 'now'}...")
+                
+                if use_batch:
+                    asyncio.run(batch_download(
+                        symbols=symbols,
+                        timeframes=timeframes,
+                        start_date=start_date_obj,
+                        end_date=end_date_obj,
+                        batch_days=90,
+                        data_dir='data'
+                    ))
+                else:
+                    asyncio.run(download_data(
+                        symbols=symbols,
+                        timeframes=timeframes,
+                        start_date=start_date_obj,
+                        end_date=end_date_obj,
+                        data_dir='data'
+                    ))
+                    
+            print("Data download completed")
+            
         except ValueError:
-            print("Invalid date format. Use YYYY-MM-DD.")
+            print("Invalid date format. Use YYYY-MM-DD")
+        except Exception as e:
+            print(f"Error downloading data: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            
+    def do_backtest(self, arg):
+        """Run a backtest."""
+        args = arg.split()
+        
+        if len(args) < 3:
+            print("Usage: backtest <strategy_id> <start_date> [<end_date>] [<timeframe>] [--auto-download]")
+            print("\nExample: backtest ma_crossover 2023-01-01 2023-12-31 1h --auto-download")
             return
             
-        print(f"Running backtest for strategy {strategy} from {start_date} to {end_date or 'now'} with timeframe {timeframe}...")
+        strategy_id = args[0]
+        start_date = args[1]
+        end_date = args[2] if len(args) > 2 and not args[2].startswith('--') else None
         
-        # Run backtest
-        results = await self.trading_engine.run_backtest(
-            strategy_id=strategy,
-            start_date=start_date_obj,
-            end_date=end_date_obj,
-            timeframe=timeframe
-        )
+        # Check for timeframe and auto-download flag
+        timeframe = "1h"  # Default
+        auto_download = False
         
-        if not results:
-            print("Backtest failed or returned no results.")
-            return
+        for i in range(2 if end_date else 3, len(args)):
+            if args[i] == "--auto-download":
+                auto_download = True
+            elif not args[i].startswith('--'):
+                timeframe = args[i]
+        
+        try:
+            # Parse dates
+            start_date = datetime.strptime(start_date, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date, '%Y-%m-%d') if end_date else datetime.now()
             
-        # Display backtest results
-        print("\n=== Backtest Results ===")
-        print(f"Strategy: {strategy}")
-        print(f"Period: {start_date} to {end_date or datetime.now().strftime('%Y-%m-%d')}")
-        print(f"Timeframe: {timeframe}")
-        print(f"Start balance: ${results.get('start_balance', 0):.2f}")
-        print(f"End balance: ${results.get('end_balance', 0):.2f}")
-        print(f"Return: {((results.get('end_balance', 0) / results.get('start_balance', 1)) - 1) * 100:.2f}%")
-        print(f"Buy & Hold return: {results.get('buy_hold_return', 0):.2f}%")
-        print(f"Total trades: {results.get('total_trades', 0)}")
-        print(f"Win rate: {results.get('win_rate', 0):.2f}%")
-        print(f"Profit factor: {results.get('profit_factor', 0):.2f}")
-        print(f"Max drawdown: {results.get('max_drawdown_pct', 0):.2f}%")
-        print(f"Sharpe ratio: {results.get('sharpe_ratio', 0):.2f}")
+            # Check if auto-download is requested
+            if auto_download:
+                from cryptobot.scripts.download_historical_data import download_strategy_data
+                
+                print(f"Downloading data for {strategy_id} from {start_date.date()} to {end_date.date()}...")
+                await_download_strategy_data = download_strategy_data(
+                    config_path=self.config_path,
+                    strategy_id=strategy_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    timeframes=[timeframe]
+                )
+                asyncio.run(await_download_strategy_data)
+            
+            print(f"Running backtest for {strategy_id} from {start_date.date()} to {end_date.date()} with timeframe {timeframe}...")
+            
+            # Run backtest
+            results = asyncio.run(self.engine.run_backtest(
+                strategy_id=strategy_id,
+                start_date=start_date,
+                end_date=end_date,
+                timeframe=timeframe
+            ))
+            
+            print("\nBacktest Results:")
+            print("================")
+            print(json.dumps(results, indent=2))
+            
+        except ValueError:
+            print("Invalid date format. Use YYYY-MM-DD")
+        except Exception as e:
+            print(f"Error running backtest: {str(e)}")
         
-        # Indicate where results are saved
-        results_dir = self.trading_engine.config.get('backtest', {}).get('results_dir', 'backtest_results')
-        print(f"\nDetailed results saved to {results_dir}/{strategy}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_*.csv")
+    def do_settings(self, arg):
+        """View or change settings."""
+        args = arg.split()
         
-    async def _handle_settings(self, args):
-        """
-        Handle settings command.
-        
-        Args:
-            args: Command arguments
-        """
         if not args:
-            # Default: view all settings
-            await self._view_settings()
-            return
-            
-        subcommand = args[0].lower()
-        
-        if subcommand == 'view':
-            await self._view_settings()
-        elif subcommand == 'set' and len(args) > 2:
-            await self._set_setting(args[1], args[2])
+            # View all settings
+            config = load_config(self.config_path)
+            print("\nCurrent Settings:")
+            print("================")
+            print(json.dumps(config, indent=2))
         else:
-            print("Invalid settings subcommand. Use: view, set PARAM VALUE")
-            
-    async def _view_settings(self):
-        """View all settings."""
-        print("Fetching configuration settings...")
+            # Change a specific setting
+            print("Setting changes not implemented in this version")
         
-        # Display basic settings
-        print("\n=== Configuration Settings ===")
-        print(f"Config path: {self.trading_engine.config_path}")
-        print(f"Mode: {self.trading_engine.mode}")
+    def do_help(self, arg):
+        """Show help message."""
+        if arg:
+            # Show help for a specific command
+            super().do_help(arg)
+        else:
+            # Show general help
+            print("\nAvailable Commands:")
+            print("==================")
+            print("  start           - Start the trading bot")
+            print("  stop            - Stop the trading bot")
+            print("  status          - Show current bot status")
+            print("  balance         - Show account balances")
+            print("  positions       - Show active positions")
+            print("  trades          - Show recent trades")
+            print("  strategies      - List or manage strategies")
+            print("  markets         - Show available markets")
+            print("  download_data   - Download historical data for backtesting")
+            print("  backtest        - Run a backtest")
+            print("  settings        - View or change settings")
+            print("  help            - Show this help message")
+            print("  exit            - Exit the CLI")
         
-        # Display database settings
-        db_config = self.trading_engine.config.get('database', {})
-        print("\nDatabase:")
-        print(f"  Enabled: {db_config.get('enabled', False)}")
-        if db_config.get('enabled', False):
-            print(f"  URL: {db_config.get('url', 'localhost')}")
-            print(f"  Database: {db_config.get('database', 'cryptobot')}")
-            
-        # Display cache settings
-        print("\nCache:")
-        print(f"  Enabled: {self.trading_engine.config.get('cache_enabled', True)}")
-        print(f"  Directory: {self.trading_engine.config.get('cache_dir', '.cache')}")
+    def do_exit(self, arg):
+        """Exit the CLI."""
+        print("Exiting...")
+        return True
         
-        # Display historical data settings
-        hist_config = self.trading_engine.config.get('historical_data', {})
-        print("\nHistorical Data:")
-        print(f"  Enabled: {hist_config.get('enabled', True)}")
-        print(f"  Source: {hist_config.get('source', 'csv')}")
-        print(f"  Directory: {hist_config.get('data_dir', 'data')}")
-        
-        # Display risk management settings
-        risk_config = self.trading_engine.config.get('risk_management', {})
-        print("\nRisk Management:")
-        print(f"  Enabled: {risk_config.get('enabled', True)}")
-        print(f"  Max positions: {risk_config.get('max_positions', 5)}")
-        print(f"  Max daily trades: {risk_config.get('max_daily_trades', 20)}")
-        print(f"  Max drawdown: {risk_config.get('max_drawdown_percent', 20.0)}%")
-        print(f"  Max risk per trade: {risk_config.get('max_risk_per_trade', 2.0)}%")
-        
-        # Display notification settings
-        notif_config = self.trading_engine.config.get('notifications', {})
-        print("\nNotifications:")
-        print(f"  Enabled: {notif_config.get('enabled', False)}")
-        print(f"  Email: {notif_config.get('email', {}).get('enabled', False)}")
-        print(f"  Telegram: {notif_config.get('telegram', {}).get('enabled', False)}")
-        
-        # Display loop interval
-        print(f"\nLoop interval: {self.trading_engine.config.get('loop_interval', 60)} seconds")
-        
-    async def _set_setting(self, param, value):
-        """
-        Set a configuration parameter.
-        
-        Args:
-            param: Parameter name
-            value: Parameter value
-        """
-        print(f"Setting {param} to {value}...")
-        # In a real implementation, this would update the configuration
-        # For now, we'll just print a message
-        print(f"Configuration updated. (Not actually implemented in this demo)")
-        
-    async def _confirm_action(self, message) -> bool:
-        """
-        Ask for confirmation before executing an action.
-        
-        Args:
-            message: Confirmation message
-            
-        Returns:
-            bool: True if confirmed, False otherwise
-        """
-        response = await self.session.prompt_async(
-            HTML(f'{message} (y/n): '),
-            style=self.style
-        )
-        return response.lower() in ['y', 'yes']
-        
-    def _print_header(self):
-        """Print the CLI header."""
-        header = """
-        ╔═══════════════════════════════════════════════════╗
-        ║                                                   ║
-        ║   ██████╗██████╗ ██╗   ██╗██████╗ ████████╗ ██████╗     ║
-        ║  ██╔════╝██╔══██╗╚██╗ ██╔╝██╔══██╗╚══██╔══╝██╔═══██╗    ║
-        ║  ██║     ██████╔╝ ╚████╔╝ ██████╔╝   ██║   ██║   ██║    ║
-        ║  ██║     ██╔══██╗  ╚██╔╝  ██╔═══╝    ██║   ██║   ██║    ║
-        ║  ╚██████╗██║  ██║   ██║   ██║        ██║   ╚██████╔╝    ║
-        ║   ╚═════╝╚═╝  ╚═╝   ╚═╝   ╚═╝        ╚═╝    ╚═════╝     ║
-        ║                                                   ║
-        ║         Automated Cryptocurrency Trading Bot         ║
-        ║                                                   ║
-        ╚═══════════════════════════════════════════════════╝
-        
-        Type 'help' for available commands.
-        """
-        print(header)
+    def do_EOF(self, arg):
+        """Exit on EOF (Ctrl+D)."""
+        print("Exiting...")
+        return True
 
 
-def main():
-    """CLI entry point."""
-    parser = argparse.ArgumentParser(description="CryptoBot CLI")
-    parser.add_argument("--config", "-c", default="config.json", help="Path to configuration file")
-    parser.add_argument("--log-level", "-l", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                       help="Logging level")
-    parser.add_argument("--mode", "-m", default="test", choices=["production", "test"],
-                       help="Trading mode")
+def run_command(args):
+    """
+    Run a command based on command-line arguments.
     
-    args = parser.parse_args()
-    
-    # Set up logging
-    setup_logger(args.log_level)
-    
+    Args:
+        args: Command-line arguments
+    """
     # Initialize trading engine
-    trading_engine = TradingEngine(
+    engine = TradingEngine(
         config_path=args.config,
-        log_level=args.log_level,
+        log_level=args.log_level.upper(),
         mode=args.mode
     )
     
-    # Initialize CLI
-    cli = CLI(trading_engine)
+    # Execute command
+    if args.command == "run":
+        # Run the bot
+        asyncio.run(engine.start())
+        try:
+            # Keep running until interrupted
+            asyncio.run(asyncio.sleep(float('inf')))
+        except KeyboardInterrupt:
+            print("\nStopping bot...")
+            asyncio.run(engine.stop())
+    elif args.command == "cli":
+        # Start interactive CLI
+        cli = CryptoBotCLI(engine)
+        cli.cmdloop()
+    elif args.command == "backtest":
+        # Run backtest
+        try:
+            # Parse dates
+            start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+            end_date = datetime.strptime(args.end_date, '%Y-%m-%d') if args.end_date else datetime.now()
+            
+            # Check if auto-download is requested
+            if args.auto_download:
+                from cryptobot.scripts.download_historical_data import download_strategy_data
+                
+                print(f"Downloading data for {args.strategy} from {start_date.date()} to {end_date.date()}...")
+                await_download_strategy_data = download_strategy_data(
+                    config_path=args.config,
+                    strategy_id=args.strategy,
+                    start_date=start_date,
+                    end_date=end_date,
+                    timeframes=[args.timeframe]
+                )
+                asyncio.run(await_download_strategy_data)
+            
+            print(f"Running backtest for {args.strategy} from {start_date.date()} to {end_date.date()} with timeframe {args.timeframe}...")
+            
+            # Run backtest
+            results = asyncio.run(engine.run_backtest(
+                strategy_id=args.strategy,
+                start_date=start_date,
+                end_date=end_date,
+                timeframe=args.timeframe
+            ))
+            
+            print("\nBacktest Results:")
+            print("================")
+            print(json.dumps(results, indent=2))
+            
+        except ValueError:
+            print("Invalid date format. Use YYYY-MM-DD")
+        except Exception as e:
+            print(f"Error running backtest: {str(e)}")
+    elif args.command == "download-data":
+        # Download historical data
+        try:
+            from cryptobot.scripts.download_historical_data import download_data, download_strategy_data, batch_download
+            
+            # Parse dates
+            start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+            end_date = datetime.strptime(args.end_date, '%Y-%m-%d') if args.end_date else datetime.now()
+            
+            if args.strategy:
+                # Download data for strategy
+                print(f"Downloading data for strategy {args.strategy} from {start_date.date()} to {end_date.date()}...")
+                asyncio.run(download_strategy_data(
+                    config_path=args.config,
+                    strategy_id=args.strategy,
+                    start_date=start_date,
+                    end_date=end_date
+                ))
+            else:
+                # Download data for symbols
+                symbols = args.symbols.split(',') if args.symbols else ['BTC/USDT', 'ETH/USDT', 'BNB/USDT']
+                timeframes = args.timeframes.split(',') if args.timeframes else ['1h', '4h', '1d']
+                
+                print(f"Downloading data for {len(symbols)} symbols from {start_date.date()} to {end_date.date()}...")
+                
+                if args.batch:
+                    asyncio.run(batch_download(
+                        symbols=symbols,
+                        timeframes=timeframes,
+                        start_date=start_date,
+                        end_date=end_date,
+                        batch_days=args.batch_days,
+                        data_dir=args.data_dir
+                    ))
+                else:
+                    asyncio.run(download_data(
+                        symbols=symbols,
+                        timeframes=timeframes,
+                        start_date=start_date,
+                        end_date=end_date,
+                        data_dir=args.data_dir
+                    ))
+                    
+            print("Data download completed")
+            
+        except ValueError:
+            print("Invalid date format. Use YYYY-MM-DD")
+        except Exception as e:
+            print(f"Error downloading data: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+    elif args.command == "status":
+        # Show status
+        status = asyncio.run(engine.get_status())
+        print(json.dumps(status, indent=2))
+    elif args.command == "init":
+        # Initialize configuration
+        config = load_config(args.config)
+        save_config(config, args.config)
+        print(f"Initialized configuration: {args.config}")
+    else:
+        print(f"Unknown command: {args.command}")
+
+
+def create_parser():
+    """
+    Create argument parser.
     
-    # Run CLI
+    Returns:
+        argparse.ArgumentParser: Argument parser
+    """
+    parser = argparse.ArgumentParser(description="CryptoBot - Cryptocurrency Trading Bot")
+    
+    # Global arguments
+    parser.add_argument("--config", "-c", default="config.json", help="Path to configuration file")
+    parser.add_argument("--log-level", "-l", default="info", choices=["debug", "info", "warning", "error", "critical"],
+                       help="Logging level")
+    parser.add_argument("--mode", "-m", default="production", choices=["production", "test"],
+                       help="Operation mode")
+    
+    # Subparsers for commands
+    subparsers = parser.add_subparsers(dest="command", help="Command")
+    
+    # Run command
+    run_parser = subparsers.add_parser("run", help="Run trading bot")
+    
+    # CLI command
+    cli_parser = subparsers.add_parser("cli", help="Start interactive CLI")
+    
+    # Backtest command
+    backtest_parser = subparsers.add_parser("backtest", help="Run backtest")
+    backtest_parser.add_argument("--strategy", "-s", required=True, help="Strategy ID")
+    backtest_parser.add_argument("--start-date", required=True, help="Start date (YYYY-MM-DD)")
+    backtest_parser.add_argument("--end-date", help="End date (YYYY-MM-DD)")
+    backtest_parser.add_argument("--timeframe", "-t", default="1h", help="Timeframe for backtest")
+    backtest_parser.add_argument("--auto-download", "-a", action="store_true", help="Automatically download missing data")
+    
+    # Download data command
+    download_parser = subparsers.add_parser("download-data", help="Download historical data for backtesting")
+    download_parser.add_argument("--strategy", help="Strategy ID to download data for")
+    download_parser.add_argument("--symbols", "-s", help="Comma-separated list of symbols")
+    download_parser.add_argument("--timeframes", "-t", help="Comma-separated list of timeframes")
+    download_parser.add_argument("--start-date", required=True, help="Start date (YYYY-MM-DD)")
+    download_parser.add_argument("--end-date", help="End date (YYYY-MM-DD)")
+    download_parser.add_argument("--data-dir", default="data", help="Directory to save data")
+    download_parser.add_argument("--batch", action="store_true", help="Download in batches to avoid rate limits")
+    download_parser.add_argument("--batch-days", type=int, default=90, help="Number of days per batch")
+    
+    # Status command
+    status_parser = subparsers.add_parser("status", help="Show bot status")
+    
+    # Init command
+    init_parser = subparsers.add_parser("init", help="Initialize configuration")
+    
+    return parser
+
+
+def main():
+    """Main entry point."""
+    # Parse command-line arguments
+    parser = create_parser()
+    args = parser.parse_args()
+    
+    # Set up logging
+    setup_logger(args.log_level.upper())
+    
+    if not args.command:
+        parser.print_help()
+        return
+        
     try:
-        asyncio.run(cli.start())
+        # Run command
+        run_command(args)
     except KeyboardInterrupt:
-        print("\nExiting CLI. Goodbye!")
+        print("\nExiting...")
     except Exception as e:
-        logger.error(f"Error running CLI: {str(e)}")
-        print(f"Error: {str(e)}")
+        logger.error(f"Error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":
