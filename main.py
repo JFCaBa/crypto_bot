@@ -171,58 +171,86 @@ def create_default_config(config_path: str):
             "type": "MovingAverageCrossover",
             "symbols": ["BTC/USDT"],
             "timeframes": ["1h", "4h"],
-                "params": {
-                    "fast_period": 10,
-                    "slow_period": 50,
-                    "signal_period": 9,
-                    "ma_type": "ema",
-                    "use_macd": False,
-                    "entry_threshold": 0.0,
-                    "exit_threshold": 0.0,
-                    "trailing_stop": 0.0,
-                    "stop_loss": 2.0,
-                    "take_profit": 4.0,
-                    "risk_per_trade": 0.01
-                }
+            "params": {
+                "fast_period": 10,
+                "slow_period": 50,
+                "signal_period": 9,
+                "ma_type": "ema",
+                "use_macd": False,
+                "entry_threshold": 0.0,
+                "exit_threshold": 0.0,
+                "trailing_stop": 0.0,
+                "stop_loss": 2.0,
+                "take_profit": 4.0,
+                "risk_per_trade": 0.01
+            }
             },
             "rsi": {
             "enabled": True,
             "type": "RSI",
             "symbols": ["BTC/USDT"],
             "timeframes": ["1h"],
-                "params": {
-                    "period": 14,
-                    "overbought": 70,
-                    "oversold": 30,
-                    "stop_loss": 2.0,
-                    "take_profit": 4.0,
-                    "risk_per_trade": 0.01
-                }
+            "params": {
+                "period": 14,
+                "overbought": 70,
+                "oversold": 30,
+                "stop_loss": 2.0,
+                "take_profit": 4.0,
+                "risk_per_trade": 0.01
+            }
             },
             "bollinger_bands": {
             "enabled": True,
             "type": "BollingerBands",
             "symbols": ["BTC/USDT"],
             "timeframes": ["1h"],
-                "params": {
-                    "period": 14,
-                    "overbought": 70,
-                    "oversold": 30,
-                    "stop_loss": 2.0,
-                    "take_profit": 4.0,
-                    "risk_per_trade": 0.01
-                }
+            "params": {
+                "period": 14,
+                "overbought": 70,
+                "oversold": 30,
+                "stop_loss": 2.0,
+                "take_profit": 4.0,
+                "risk_per_trade": 0.01
+            }
             },
             "ml_strategy_1": {
             "enabled": True,
             "type": "MachineLearning",
             "symbols": ["BTC/USDT"],
             "timeframes": ["1h"],
-                "params": {
-                    "lookback_period": 200,
-                    "train_interval": 720
-                }
+            "params": {
+                "lookback_period": 4200,
+                "train_interval": 720
             }
+            },
+            "custom_strategy": {
+            "enabled": True,
+            "type": "Custom",
+            "symbols": ["BTC/USDT"],
+            "timeframes": ["5m"],
+            "params": {
+                "lot_size": 0.1,
+                "risk_percentage": 1.0,
+                "start_hour": 8,
+                "start_minute": 0,
+                "end_hour": 15,
+                "end_minute": 0,
+                "min_pips_range": 50,
+                "max_pips_range": 5000,
+                "no_open_hours": 3,
+                "trade_london": True,
+                "trade_ny": True,
+                "confirmation_candles": 1,
+                "max_trades_per_day": 3,
+                "min_wait_hours": 1,
+                "use_sl": True,
+                "use_tp": True,
+                "use_ts": True,
+                "stop_loss_pips": 50,
+                "take_profit_pips": 100,
+                "trailing_stop_pips": 20
+            }
+        }
         },
         "risk_management": {
             "enabled": True,

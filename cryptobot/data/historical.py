@@ -102,6 +102,10 @@ class HistoricalDataProvider:
             pd.DataFrame: OHLCV data
         """
         try:
+            # Ensure start_date and end_date are timezone-aware UTC
+            start_date = pd.Timestamp(start_date).tz_localize('UTC') if start_date.tzinfo is None else pd.Timestamp(start_date).tz_convert('UTC')
+            end_date = pd.Timestamp(end_date).tz_localize('UTC') if end_date.tzinfo is None else pd.Timestamp(end_date).tz_convert('UTC')
+
             # Format symbol for filename
             symbol_filename = symbol.replace('/', '')
             
@@ -122,14 +126,14 @@ class HistoricalDataProvider:
                 if 'timestamp' not in df.columns and 'time' in df.columns:
                     df['timestamp'] = df['time']
                     
-                # Convert timestamp to datetime
+                # Convert timestamp to datetime, timezone-aware UTC
                 if 'timestamp' in df.columns:
                     if df['timestamp'].dtype == 'int64':
                         # Convert milliseconds to datetime
-                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
                     else:
                         # Try to parse as datetime string
-                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
                         
                 dfs.append(df)
                 
@@ -145,7 +149,14 @@ class HistoricalDataProvider:
             # Set timestamp as index
             data.set_index('timestamp', inplace=True)
             
+            # Ensure index is timezone-aware UTC
+            if data.index.tz is None:
+                data.index = data.index.tz_localize('UTC')
+            else:
+                data.index = data.index.tz_convert('UTC')
+            
             # Filter by date range
+            logger.debug(f"Filtering data for {symbol} {timeframe}: start_date={start_date}, end_date={end_date}")
             data = data[(data.index >= start_date) & (data.index <= end_date)]
             
             # Ensure columns are properly named
@@ -172,11 +183,31 @@ class HistoricalDataProvider:
                     logger.warning(f"Missing column {col} in data for {symbol} {timeframe}")
                     return pd.DataFrame()
                     
+            logger.debug(f"Loaded {len(data)} rows from CSV for {symbol} {timeframe} after filtering")
             return data
             
         except Exception as e:
             logger.error(f"Error reading CSV data for {symbol} {timeframe}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return pd.DataFrame()
+        
+    async def get_live_data(self, symbols: List[str], timeframe: str):
+        """
+        Simulate live data streams using historical data.
+        
+        Args:
+            symbols: List of symbols
+            timeframe: Timeframe for data
+        
+        Yields:
+            tuple: (timestamp, symbol_data)
+        """
+        for symbol in symbols:
+            df = await self.get_historical_data(symbol, timeframe)
+            for idx, row in df.iterrows():
+                yield idx, {symbol: pd.DataFrame([row])}
+                await asyncio.sleep(1)  # Simulate real-time delay
             
     async def _get_data_from_api(
         self,
@@ -185,85 +216,70 @@ class HistoricalDataProvider:
         start_date: datetime,
         end_date: datetime
     ) -> pd.DataFrame:
-        """
-        Get historical data from external API in chunks if necessary.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe
-            start_date: Start date
-            end_date: End date
-            
-        Returns:
-            pd.DataFrame: OHLCV data
-        """
         try:
-            # Convert timeframe to seconds
+            start_date = pd.Timestamp(start_date).tz_localize('UTC') if start_date.tzinfo is None else pd.Timestamp(start_date).tz_convert('UTC')
+            end_date = pd.Timestamp(end_date).tz_localize('UTC') if end_date.tzinfo is None else pd.Timestamp(end_date).tz_convert('UTC')
+
             interval_seconds = timeframe_to_seconds(timeframe)
-            
-            # Calculate total time range in seconds
             time_diff = end_date - start_date
             time_diff_seconds = time_diff.total_seconds()
-            
-            # API limit is 2000 candles per request
             candles_limit = 2000
-            
-            # Determine how many requests are needed
             total_candles_needed = int(time_diff_seconds / interval_seconds) + 1
             num_requests = max(1, (total_candles_needed + candles_limit - 1) // candles_limit)
-            
-            # Base URL for CryptoCompare API
+            logger.info(f"Fetching data for {symbol} {timeframe}: {total_candles_needed} candles needed, {num_requests} API requests")
+
             base_url = "https://min-api.cryptocompare.com/data"
-            
-            # Determine API endpoint based on timeframe
-            if interval_seconds < 3600:  # Less than 1 hour
+            if interval_seconds < 3600:
                 endpoint = "histominute"
                 aggregate = int(interval_seconds / 60)
-            elif interval_seconds < 86400:  # Less than 1 day
+            elif interval_seconds < 86400:
                 endpoint = "histohour"
                 aggregate = int(interval_seconds / 3600)
-            else:  # Daily or greater
+            else:
                 endpoint = "histoday"
                 aggregate = int(interval_seconds / 86400)
-            
+
             all_data = []
             current_end = end_date
+            retries_per_chunk = 3
             for i in range(num_requests):
-                # Calculate the start time for this chunk
                 current_start = max(start_date, current_end - timedelta(seconds=candles_limit * interval_seconds))
-                
-                # Construct API URL
                 api_url = (f"{base_url}/{endpoint}?fsym={symbol.split('/')[0]}&tsym={symbol.split('/')[1]}"
                         f"&limit={candles_limit}&aggregate={aggregate}&e=CCCAGG")
                 if self.api_key:
                     api_url += f"&api_key={self.api_key}"
                 api_url += f"&toTs={int(current_end.timestamp())}"
-                
+
                 logger.debug(f"Fetching API chunk {i+1}/{num_requests} for {symbol} {timeframe} from {current_start} to {current_end}")
+
+                for attempt in range(retries_per_chunk):
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(api_url) as response:
+                            if response.status != 200:
+                                logger.warning(f"API error on attempt {attempt+1}/{retries_per_chunk}: {response.status} - {await response.text()}")
+                                if attempt == retries_per_chunk - 1:
+                                    logger.error(f"Failed to fetch API chunk {i+1} after {retries_per_chunk} attempts")
+                                await asyncio.sleep(1)
+                                continue
+                            
+                            data = await response.json()
+                            
+                            if 'Response' in data and data['Response'] == 'Error':
+                                logger.warning(f"API error on attempt {attempt+1}/{retries_per_chunk}: {data['Message']}")
+                                if attempt == retries_per_chunk - 1:
+                                    logger.error(f"Failed API chunk {i+1} after {retries_per_chunk} attempts: {data['Message']}")
+                                await asyncio.sleep(1)
+                                continue
+                                
+                            if 'Data' not in data or not data['Data']:
+                                logger.warning(f"No data returned from API for {symbol} {timeframe} in chunk {i+1}")
+                                break
+                                
+                            ohlcv_data = data['Data']
+                            logger.debug(f"Fetched {len(ohlcv_data)} candles in chunk {i+1} for {symbol} {timeframe}")
+                            all_data.extend(ohlcv_data)
+                            break
                 
-                # Make API request
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(api_url) as response:
-                        if response.status != 200:
-                            logger.error(f"API error: {response.status} - {await response.text()}")
-                            return pd.DataFrame()
-                            
-                        data = await response.json()
-                        
-                        if 'Response' in data and data['Response'] == 'Error':
-                            logger.error(f"API error: {data['Message']}")
-                            return pd.DataFrame()
-                            
-                        if 'Data' not in data or not data['Data']:
-                            logger.warning(f"No data returned from API for {symbol} {timeframe} in chunk {i+1}")
-                            current_end = current_start
-                            continue
-                            
-                        ohlcv_data = data['Data']
-                        all_data.extend(ohlcv_data)
-                
-                # Update current_end for the next chunk
-                # Subtract 1 second to ensure no overlap in timestamps
                 current_end = current_start - timedelta(seconds=1)
                 if current_end <= start_date:
                     break
@@ -272,18 +288,13 @@ class HistoricalDataProvider:
                 logger.warning(f"No data returned from API for {symbol} {timeframe} after all chunks")
                 return pd.DataFrame()
             
-            # Convert to DataFrame
             df = pd.DataFrame(all_data)
-            
-            # Convert timestamp to datetime
-            df['timestamp'] = pd.to_datetime(df['time'], unit='s')
+            df['timestamp'] = pd.to_datetime(df['time'], unit='s', utc=True)
             df.set_index('timestamp', inplace=True)
-            
-            # Remove duplicates and sort by timestamp (in case of overlaps between chunks)
             df = df.loc[~df.index.duplicated(keep='first')]
             df = df.sort_index()
-            
-            # Rename columns
+            logger.debug(f"Processed {len(df)} rows after deduplication for {symbol} {timeframe} from {df.index.min()} to {df.index.max()}")
+
             column_mapping = {
                 'time': 'timestamp',
                 'open': 'open',
@@ -295,14 +306,12 @@ class HistoricalDataProvider:
             
             df = df.rename(columns=column_mapping)
             
-            # Select required columns
             required_columns = ['open', 'high', 'low', 'close', 'volume']
             for col in required_columns:
                 if col not in df.columns:
                     logger.warning(f"Missing column {col} in API data for {symbol} {timeframe}")
                     return pd.DataFrame()
                     
-            # Filter to ensure data is within requested range
             df = df[(df.index >= start_date) & (df.index <= end_date)]
             logger.info(f"Fetched {len(df)} rows for {symbol} {timeframe} from API")
             
@@ -310,6 +319,8 @@ class HistoricalDataProvider:
             
         except Exception as e:
             logger.error(f"Error fetching API data for {symbol} {timeframe}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return pd.DataFrame()
             
     async def _get_data_from_database(

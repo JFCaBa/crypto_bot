@@ -239,25 +239,18 @@ def normalize_symbol(symbol: str, exchange: str = None) -> str:
     
 
 def timeframe_to_seconds(timeframe: str) -> int:
-    """
-    Convert timeframe string to seconds.
-    
-    Args:
-        timeframe: Timeframe string (e.g., 1m, 5m, 1h, 1d)
-        
-    Returns:
-        int: Timeframe in seconds
-    """
-    if timeframe.endswith('m'):
-        return int(timeframe[:-1]) * 60
-    elif timeframe.endswith('h'):
-        return int(timeframe[:-1]) * 60 * 60
-    elif timeframe.endswith('d'):
-        return int(timeframe[:-1]) * 60 * 60 * 24
-    elif timeframe.endswith('w'):
-        return int(timeframe[:-1]) * 60 * 60 * 24 * 7
+    unit = timeframe[-1]
+    value = int(timeframe[:-1])
+    if unit == 's':
+        return value
+    elif unit == 'm':
+        return value * 60
+    elif unit == 'h':
+        return value * 3600
+    elif unit == 'd':
+        return value * 86400
     else:
-        raise ValueError(f"Invalid timeframe format: {timeframe}")
+        raise ValueError(f"Unsupported timeframe unit: {unit}")
     
 
 def parse_timeframe(timeframe: str) -> Dict[str, int]:
