@@ -22,7 +22,7 @@ from cryptobot.exchanges.kraken import KrakenExchange
 from cryptobot.exchanges.mexc import MexcExchange
 from cryptobot.exchanges.bybit import BybitExchange
 from cryptobot.strategies.base import BaseStrategy
-from cryptobot.strategies.machine_learning import MachineLearningStrategy  # Added import
+from cryptobot.strategies.machine_learning import MachineLearningStrategy  
 from cryptobot.risk_management.manager import RiskManager
 from cryptobot.data.database import DatabaseManager
 from cryptobot.data.processor import DataProcessor
@@ -302,6 +302,12 @@ class TradingEngine:
             elif strategy_type == 'MachineLearning':
                 from cryptobot.strategies.machine_learning import MachineLearningStrategy
                 return MachineLearningStrategy
+            elif strategy_type == 'Breakout':
+                from cryptobot.strategies.breakout import BreakoutStrategy
+                return BreakoutStrategy
+            elif strategy_type == 'GridTrading':
+                from cryptobot.strategies.grid_trading import GridTradingStrategy
+                return GridTradingStrategy
             else:
                 logger.warning(f"Unknown strategy type: {strategy_type}")
                 return None

@@ -988,12 +988,12 @@ class CryptoBotCLI(cmd.Cmd):
         """Train machine learning models for a specific strategy or all ML strategies."""
         args = arg.split()
         
-        # if not args:
-        #     print("Usage: train_ml [<strategy_id>]")
-        #     print("\nExamples:")
-        #     print("  train_ml  # Train all ML strategies")
-        #     print("  train_ml ml_strategy_1  # Train a specific ML strategy")
-        #     return
+        if not args:
+            print("Usage: train_ml [<strategy_id>]")
+            print("\nExamples:")
+            print("  train_ml  # Train all ML strategies")
+            print("  train_ml ml_strategy_1  # Train a specific ML strategy")
+            return
             
         strategy_id = args[0] if args else None
         

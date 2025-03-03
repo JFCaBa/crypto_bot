@@ -34,6 +34,14 @@ STRATEGY_TYPES = {
     'MachineLearning': {
         'class': 'MachineLearningStrategy',
         'module': 'cryptobot.strategies.machine_learning'
+    },
+    'Breakout': {
+        'class': 'BreakoutStrategy',
+        'module': 'cryptobot.strategies.breakout'
+    },
+    'GridTrading': {
+        'class': 'GridTradingStrategy',
+        'module': 'cryptobot.strategies'
     }
 }
 
