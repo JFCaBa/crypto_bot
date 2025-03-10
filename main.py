@@ -224,35 +224,27 @@ def create_default_config(config_path: str):
             }
             },
             "custom_strategy": {
-            "enabled": True,
-            "type": "Custom",
-            "symbols": ["BTC/USDT"],
+            "enabled": true,
+            "type": "CustomStrategy",
+            "symbols": ["PI/USDT"],
             "timeframes": ["5m"],
             "params": {
-                "lot_size": 0.1,
-                "risk_percentage": 1.0,
-                "start_hour": 8,
-                "start_minute": 0,
-                "end_hour": 15,
-                "end_minute": 0,
-                "min_pips_range": 50,
-                "max_pips_range": 5000,
-                "no_open_hours": 3,
-                "trade_london": True,
-                "trade_ny": True,
-                "confirmation_candles": 1,
-                "max_trades_per_day": 3,
-                "min_wait_hours": 1,
-                "use_sl": True,
-                "use_tp": True,
-                "use_ts": True,
-                "stop_loss_pips": 50,
-                "take_profit_pips": 100,
-                "trailing_stop_pips": 20
+                "position_size": 0.01,
+                "range_hours": 4,
+                "min_range_pct": 1.0,
+                "max_range_pct": 5.0,
+                "max_trades_per_day": 30,
+                "min_wait_minutes": 5,
+                "atr_period": 14,
+                "atr_multiplier": 1.5,
+                "rr_multiplier": 2.0,
+                "stop_loss_pct": 2.0,
+                "take_profit_pct": 4.0,
+                "trailing_stop_pct": 1.0,
+                "recalculate_after_trade": true
             }
-        }
-        },
-        "risk_management": {
+            },
+            "risk_management": {
             "enabled": True,
             "max_positions": 5,
             "max_daily_trades": 40,
@@ -270,36 +262,37 @@ def create_default_config(config_path: str):
                 "volatility_threshold": 5.0,
                 "price_change_threshold": 10.0
             }
-        },
-        "notifications": {
-            "enabled": True,
-            "email": {
-                "enabled": False,
-                "smtp_server": "smtp.gmail.com",
-                "smtp_port": 587,
-                "username": "your_email@gmail.com",
-                "password": "",
-                "sender": "your_email@gmail.com",
-                "recipients": ["your_email@gmail.com"]
             },
-            "telegram": {
-                "enabled": False,
-                "token": "",
-                "chat_ids": []
-            }
         },
-        "loop_interval": 60,
-        "backtest": {
-            "initial_balance": 10000.0,
-            "maker_fee": 0.001,
-            "taker_fee": 0.002,
-            "slippage": 0.001,
-            "enable_margin": False,
-            "leverage": 1.0,
-            "debug": False,
-            "generate_plots": True,
-            "results_dir": "backtest_results"
-        }
+            "notifications": {
+                "enabled": True,
+                "email": {
+                    "enabled": False,
+                    "smtp_server": "smtp.gmail.com",
+                    "smtp_port": 587,
+                    "username": "your_email@gmail.com",
+                    "password": "",
+                    "sender": "your_email@gmail.com",
+                    "recipients": ["your_email@gmail.com"]
+                },
+                "telegram": {
+                    "enabled": False,
+                    "token": "",
+                    "chat_ids": []
+                }
+            },
+            "loop_interval": 60,
+            "backtest": {
+                "initial_balance": 10000.0,
+                "maker_fee": 0.001,
+                "taker_fee": 0.002,
+                "slippage": 0.001,
+                "enable_margin": False,
+                "leverage": 1.0,
+                "debug": False,
+                "generate_plots": True,
+                "results_dir": "backtest_results"
+            }
     }
     
     with open(config_path, 'w') as f:

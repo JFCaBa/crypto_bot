@@ -12,6 +12,7 @@ import asyncio
 import argparse
 import pandas as pd
 import numpy as np
+import shutil
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
@@ -51,6 +52,12 @@ class CryptoBotCLI(cmd.Cmd):
         super().__init__()
         self.engine = engine
         self.config_path = engine.config_path
+
+    def do_clean(self):
+        """Clean backttest_results and data folders."""
+        shutil.rmtree('backtest_results', ignore_errors=True)
+        shutil.rmtree('data', ignore_errors=True)
+        print("Cleaned backtest_results and data folders.")
         
     # Helper method to get strategies from engine status
     def _get_strategies(self) -> Dict[str, Any]:
@@ -483,7 +490,7 @@ class CryptoBotCLI(cmd.Cmd):
             print("====================")
             
             for strategy_id, strategy_data in status.get('strategies', {}).items():
-                active = "ACTIVE" if strategy_data.get('is_active', False) else "INACTIVE"
+                active = "ACTIVE" if strategy_data.get('enabled', True) else "INACTIVE"
                 print(f"  {strategy_id} ({active})")
                 print(f"    Type: {strategy_data.get('name', 'Unknown')}")
                 print(f"    Symbols: {', '.join(strategy_data.get('symbols', []))}")
@@ -609,25 +616,27 @@ class CryptoBotCLI(cmd.Cmd):
         """Run a backtest with enhanced analysis and visualization."""
         args = arg.split()
         
-        if len(args) < 3:
-            print("Usage: backtest <strategy_id> <start_date> [<end_date>] [<timeframe>] [--auto-download] [--detailed]")
+        if not args:
+            print("Usage: backtest <strategy_id> [<start_date> [<end_date>]] [<timeframe>] [--auto-download] [--detailed]")
             print("\nExample: backtest ma_crossover 2023-01-01 2023-12-31 1h --auto-download --detailed")
+            print("\nNote: If no dates are provided, the last 7 days will be used.")
             return
             
         strategy_id = args[0]
-        start_date_str = args[1]
-        
-        # Fix the end_date parsing logic
-        end_date_str = None
-        if len(args) > 2 and not args[2].startswith('--'):
-            end_date_str = args[2]
+        start_date_str = None if len(args) < 2 or args[1].startswith('--') else args[1]
+        end_date_str = None if len(args) < 3 or args[2].startswith('--') else args[2]
         
         # Check for timeframe and flags
         timeframe = "1h"  # Default
         auto_download = False
         detailed_analysis = False
         
-        for i in range(2 if end_date_str is None else 3, len(args)):
+        # Start from the right position based on provided dates
+        start_idx = 1
+        if start_date_str: start_idx += 1
+        if end_date_str: start_idx += 1
+        
+        for i in range(start_idx, len(args)):
             if args[i] == "--auto-download":
                 auto_download = True
             elif args[i] == "--detailed":
@@ -636,32 +645,41 @@ class CryptoBotCLI(cmd.Cmd):
                 timeframe = args[i]
         
         try:
-            # Parse dates with robustness
-            try:
+            # Parse dates if provided, otherwise use defaults (last 7 days)
+            if start_date_str:
                 start_date = pd.to_datetime(start_date_str).to_pydatetime()
-                if end_date_str:
-                    end_date = pd.to_datetime(end_date_str).to_pydatetime()
-                else:
-                    end_date = datetime.now()
-            except ValueError as e:
-                print(f"Invalid date format: {str(e)}. Use YYYY-MM-DD")
-                return
+            else:
+                start_date = None  # Will use default in engine.run_backtest
+                
+            if end_date_str:
+                end_date = pd.to_datetime(end_date_str).to_pydatetime()
+            else:
+                end_date = None  # Will use default in engine.run_backtest
             
-            # Check if auto-download is requested
+            # Auto-download if requested
             if auto_download:
                 from cryptobot.scripts.download_historical_data import download_strategy_data
                 
-                print(f"Downloading data for {strategy_id} from {start_date.date()} to {end_date.date()}...")
+                # Use provided dates or defaults
+                dl_start = start_date or (datetime.now() - timedelta(days=7))
+                dl_end = end_date or datetime.now()
+                
+                print(f"Downloading data for {strategy_id} from {dl_start.date()} to {dl_end.date()}...")
                 await_download_strategy_data = download_strategy_data(
                     config_path=self.config_path,
                     strategy_id=strategy_id,
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=dl_start,
+                    end_date=dl_end,
                     timeframes=[timeframe]
                 )
                 asyncio.run(await_download_strategy_data)
             
-            print(f"Running backtest for {strategy_id} from {start_date.date()} to {end_date.date()} with timeframe {timeframe}...")
+            # Run backtest
+            print(f"Running backtest for {strategy_id} with timeframe {timeframe}...")
+            if start_date and end_date:
+                print(f"Time period: {start_date.date()} to {end_date.date()}")
+            else:
+                print("Time period: Last 7 days")
                 
             # Run backtest
             results = asyncio.run(self.engine.run_backtest(
@@ -701,7 +719,9 @@ class CryptoBotCLI(cmd.Cmd):
             # Run enhanced analysis
             print("\nAnalyzing backtest results...")
             analysis = asyncio.run(self.analyze_backtest_results(
-                metrics, equity_curve, trades, start_date, end_date
+                metrics, equity_curve, trades, 
+                start_date or (datetime.now() - timedelta(days=7)),
+                end_date or datetime.now()
             ))
             
             if 'error' in analysis:
@@ -709,7 +729,9 @@ class CryptoBotCLI(cmd.Cmd):
                 
             # Display basic results
             print("\n" + "=" * 70)
-            print(f"BACKTEST RESULTS: {strategy_id} ({start_date.date()} to {end_date.date()}, {timeframe})")
+            print(f"BACKTEST RESULTS: {strategy_id} ({timeframe})")
+            time_period = f"{start_date.date() if start_date else 'Last 7 days'} to {end_date.date() if end_date else 'now'}"
+            print(f"Period: {time_period}")
             print("=" * 70)
             
             # Basic metrics
@@ -795,8 +817,8 @@ class CryptoBotCLI(cmd.Cmd):
             # Visualize results
             self._visualize_backtest(
                 strategy_id, 
-                start_date, 
-                end_date, 
+                start_date or (datetime.now() - timedelta(days=7)), 
+                end_date or datetime.now(), 
                 timeframe, 
                 equity_curve, 
                 trades, 
@@ -804,9 +826,7 @@ class CryptoBotCLI(cmd.Cmd):
             )
             
         except ValueError as e:
-            print(f"Invalid date format in '{start_date_str}' or '{end_date_str}'. Use YYYY-MM-DD")
-            print("Invalid date format. Use YYYY-MM-DD")
-            print(f"Error details: {str(e)}")
+            print(f"Invalid date format: {str(e)}. Use YYYY-MM-DD")
         except Exception as e:
             print(f"Error running backtest: {str(e)}")
             import traceback
@@ -1735,6 +1755,9 @@ def run_command(args):
         logger.error(f"Configuration file not found at {args.config}")
         raise FileNotFoundError(f"Configuration file not found at {args.config}")
     
+    # Load configuration
+    config = load_config(args.config)
+    
     # Initialize trading engine
     engine = TradingEngine(
         config_path=args.config,
@@ -1787,9 +1810,31 @@ def run_command(args):
     elif args.command == "download-data":
         try:
             from cryptobot.scripts.download_historical_data import download_data, download_strategy_data, batch_download
+            from cryptobot.security.encryption import decrypt_api_keys
             
             start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
             end_date = datetime.strptime(args.end_date, '%Y-%m-%d') if args.end_date else datetime.now()
+            
+            # Get API credentials from the first enabled exchange
+            api_key = None
+            api_secret = None
+            exchange_id = None
+            
+            exchanges_config = config.get('exchanges', {})
+            for ex_id, exchange_config in exchanges_config.items():
+                if exchange_config.get('enabled', False):
+                    # Get API keys
+                    api_key = exchange_config.get('api_key', '')
+                    api_secret = exchange_config.get('api_secret', '')
+                    exchange_id = ex_id
+                    
+                    # Decrypt API keys if encrypted
+                    if exchange_config.get('encrypted', False):
+                        api_key = decrypt_api_keys(api_key)
+                        api_secret = decrypt_api_keys(api_secret)
+                    
+                    logger.info(f"Using API credentials from {exchange_id} exchange")
+                    break
             
             if args.strategy:
                 print(f"Downloading data for strategy {args.strategy} from {start_date.date()} to {end_date.date()}...")
@@ -1803,6 +1848,11 @@ def run_command(args):
                 symbols = args.symbols.split(',') if args.symbols else ['BTC/USDT', 'ETH/USDT', 'BNB/USDT']
                 timeframes = args.timeframes.split(',') if args.timeframes else ['1h', '4h', '1d']
                 print(f"Downloading data for {len(symbols)} symbols from {start_date.date()} to {end_date.date()}...")
+                
+                if exchange_id is None:
+                    print("No enabled exchange found in configuration. Please enable at least one exchange.")
+                    return
+                
                 if args.batch:
                     asyncio.run(batch_download(
                         symbols=symbols,
@@ -1810,7 +1860,10 @@ def run_command(args):
                         start_date=start_date,
                         end_date=end_date,
                         batch_days=args.batch_days,
-                        data_dir=args.data_dir
+                        data_dir=args.data_dir,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        exchange_id=exchange_id
                     ))
                 else:
                     asyncio.run(download_data(
@@ -1818,7 +1871,10 @@ def run_command(args):
                         timeframes=timeframes,
                         start_date=start_date,
                         end_date=end_date,
-                        data_dir=args.data_dir
+                        data_dir=args.data_dir,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        exchange_id=exchange_id
                     ))
             print("Data download completed")
         except ValueError:

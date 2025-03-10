@@ -115,12 +115,36 @@ class TradingEngine:
             # Initialize historical data provider
             historical_config = self.config.get('historical_data', {})
             if historical_config and historical_config.get('enabled', False):
+                # Find an enabled exchange to use for API credentials
+                exchange_id = None
+                api_key = None
+                api_secret = None
+                
+                exchanges_config = self.config.get('exchanges', {})
+                for exch_id, exchange_config in exchanges_config.items():
+                    if exchange_config.get('enabled', False):
+                        exchange_id = exch_id
+                        api_key = exchange_config.get('api_key', '')
+                        api_secret = exchange_config.get('api_secret', '')
+                        
+                        # Decrypt API keys if encrypted
+                        if exchange_config.get('encrypted', False):
+                            api_key = decrypt_api_keys(api_key)
+                            api_secret = decrypt_api_keys(api_secret)
+                            
+                        logger.info(f"Using API credentials from {exchange_id} exchange for historical data")
+                        break
+                
+                # Create historical data provider with proper credentials
                 self.historical_data = HistoricalDataProvider(
                     source=historical_config.get('source', 'csv'),
                     data_dir=historical_config.get('data_dir', 'data'),
-                    api_key=historical_config.get('api_key'),
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    exchange_id=exchange_id or 'mexc',
                     db_manager=self.db_manager
                 )
+                
                 logger.info("Historical data provider initialized")
                 
             # Initialize risk manager
@@ -296,9 +320,6 @@ class TradingEngine:
             elif strategy_type == 'BollingerBands':
                 from cryptobot.strategies.bollinger_bands import BollingerBandsStrategy
                 return BollingerBandsStrategy
-            elif strategy_type == 'Custom':
-                from cryptobot.strategies.custom import CustomStrategy
-                return CustomStrategy
             elif strategy_type == 'MachineLearning':
                 from cryptobot.strategies.machine_learning import MachineLearningStrategy
                 return MachineLearningStrategy
@@ -308,6 +329,12 @@ class TradingEngine:
             elif strategy_type == 'GridTrading':
                 from cryptobot.strategies.grid_trading import GridTradingStrategy
                 return GridTradingStrategy
+            elif strategy_type == 'CustomStrategy':
+                from cryptobot.strategies.custom import CustomStrategy
+                return CustomStrategy
+            elif strategy_type == 'ButterflySwingStrategy':
+                from cryptobot.strategies.butterfly_swing import ButterflySwingStrategy
+                return ButterflySwingStrategy
             else:
                 logger.warning(f"Unknown strategy type: {strategy_type}")
                 return None
@@ -695,8 +722,8 @@ class TradingEngine:
     async def run_backtest(
         self, 
         strategy_id: str, 
-        start_date: datetime, 
-        end_date: datetime, 
+        start_date: datetime = None, 
+        end_date: datetime = None, 
         timeframe: str = '1h',
         return_full_results: bool = False
     ) -> Dict[str, Any]:
@@ -705,8 +732,8 @@ class TradingEngine:
         
         Args:
             strategy_id: Strategy identifier
-            start_date: Start date for backtest
-            end_date: End date for backtest
+            start_date: Start date for backtest (defaults to 7 days ago)
+            end_date: End date for backtest (defaults to current time)
             timeframe: Timeframe for backtest
             return_full_results: Whether to return the full results including equity curve and trades
                 
@@ -723,6 +750,15 @@ class TradingEngine:
                 return {}
                     
             strategy = self.strategies[strategy_id]
+            
+            # Default dates if not provided
+            if end_date is None:
+                end_date = datetime.now()
+            if start_date is None:
+                # Default to 7 days before end_date
+                start_date = end_date - timedelta(days=7)
+                
+            logger.info(f"Backtesting {strategy_id} from {start_date} to {end_date} using timeframe {timeframe}")
                 
             # Create backtesting engine
             backtest_engine = BacktestingEngine(
@@ -738,7 +774,6 @@ class TradingEngine:
             )
                 
             # Run backtest
-            logger.info(f"Running backtest for {strategy_id} from {start_date} to {end_date}")
             metrics = await backtest_engine.run(start_date, end_date, timeframe)
                 
             # Save results to files if needed

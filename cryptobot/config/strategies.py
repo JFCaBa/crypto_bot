@@ -42,6 +42,10 @@ STRATEGY_TYPES = {
     'GridTrading': {
         'class': 'GridTradingStrategy',
         'module': 'cryptobot.strategies'
+    },
+    'ButterflySwingStrategy': {
+        'class': 'ButterflySwingStrategy',
+        'module': 'cryptobot.strategies'
     }
 }
 

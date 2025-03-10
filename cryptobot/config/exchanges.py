@@ -67,7 +67,9 @@ def get_exchange_module(exchange_id: str) -> Optional[str]:
     exchange_modules = {
         'binance': 'cryptobot.exchanges.binance',
         'coinbase': 'cryptobot.exchanges.coinbase',
-        'kraken': 'cryptobot.exchanges.kraken'
+        'kraken': 'cryptobot.exchanges.kraken',
+        'mexc': 'cryptobot.exchanges.mexc',
+        'bybit': 'cryptobot.exchanges.bybit'
     }
     
     return exchange_modules.get(exchange_id)

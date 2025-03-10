@@ -1,17 +1,17 @@
 """
 Historical Data Provider
 =====================
-Provides historical price data for backtesting and analysis.
+Provides historical price data for backtesting and analysis using CCXT.
 """
 
 import os
 import glob
-import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union, Any
 
 import pandas as pd
+import ccxt.async_support as ccxt_async
 from loguru import logger
 
 from cryptobot.data.database import DatabaseManager
@@ -20,7 +20,7 @@ from cryptobot.utils.helpers import timeframe_to_seconds, parse_timeframe
 
 class HistoricalDataProvider:
     """
-    Provider for historical price data from various sources.
+    Provider for historical price data from various sources including CCXT-supported exchanges.
     """
     
     def __init__(
@@ -28,6 +28,8 @@ class HistoricalDataProvider:
         source: str = 'csv',
         data_dir: str = 'data',
         api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        exchange_id: str = 'mexc',
         db_manager: Optional[DatabaseManager] = None
     ):
         """
@@ -36,20 +38,53 @@ class HistoricalDataProvider:
         Args:
             source: Data source ('csv', 'api', 'database')
             data_dir: Directory for CSV data
-            api_key: API key for external data sources
+            api_key: API key for exchange
+            api_secret: API secret for exchange
+            exchange_id: Exchange identifier (e.g., 'binance', 'coinbase', 'kraken')
             db_manager: Database manager instance
         """
         self.source = source
         self.data_dir = data_dir
         self.api_key = api_key
+        self.api_secret = api_secret
+        self.exchange_id = exchange_id
         self.db_manager = db_manager
+        self.exchange = None  # Will be initialized when needed
         
         # Ensure data directory exists
-        if self.source == 'csv' and not os.path.exists(self.data_dir):
+        if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
             
-        logger.info(f"Initialized historical data provider with source: {source}")
+        logger.info(f"Initialized historical data provider with source: {source}, exchange: {exchange_id}")
         
+    async def _initialize_exchange(self):
+        """Initialize CCXT exchange instance if not already done."""
+        if self.exchange is not None:
+            return
+
+        try:
+            # Get the exchange class dynamically
+            exchange_class = getattr(ccxt_async, self.exchange_id)
+            
+            # Create exchange instance with authentication if provided
+            config = {
+                'enableRateLimit': True,
+                'timeout': 30000,
+            }
+            
+            if self.api_key and self.api_secret:
+                config['apiKey'] = self.api_key
+                config['secret'] = self.api_secret
+
+            logger.debug(f"API Key: {self.api_key}, API Secret: {self.api_secret}")
+                
+            self.exchange = exchange_class(config)
+            logger.info(f"Initialized {self.exchange_id} exchange for historical data")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize exchange {self.exchange_id}: {str(e)}")
+            raise
+
     async def get_historical_data(
         self,
         symbol: str,
@@ -58,23 +93,20 @@ class HistoricalDataProvider:
         end_date: datetime = None
     ) -> pd.DataFrame:
         """
-        Get historical OHLCV data.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe
-            start_date: Start date
-            end_date: End date (default: current time)
-            
-        Returns:
-            pd.DataFrame: OHLCV data
+        Get historical OHLCV data, preferring CSV if available.
         """
         if end_date is None:
             end_date = datetime.now()
-            
-        if self.source == 'csv':
-            return await self._get_data_from_csv(symbol, timeframe, start_date, end_date)
-        elif self.source == 'api':
+
+        # Try CSV first
+        csv_data = await self._get_data_from_csv(symbol, timeframe, start_date, end_date)
+        if not csv_data.empty:
+            logger.info(f"Loaded {len(csv_data)} rows from CSV for {symbol} {timeframe}")
+            return csv_data
+
+        # Fall back to API if CSV not available or source is explicitly 'api'
+        if self.source == 'api':
+            logger.info(f"No CSV data found, fetching from API for {symbol} {timeframe}")
             return await self._get_data_from_api(symbol, timeframe, start_date, end_date)
         elif self.source == 'database':
             return await self._get_data_from_database(symbol, timeframe, start_date, end_date)
@@ -216,112 +248,207 @@ class HistoricalDataProvider:
         start_date: datetime,
         end_date: datetime
     ) -> pd.DataFrame:
+        """
+        Get historical data from exchange API using CCXT.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Timeframe
+            start_date: Start date
+            end_date: End date
+            
+        Returns:
+            pd.DataFrame: OHLCV data
+        """
         try:
+            # Initialize exchange if not already done
+            await self._initialize_exchange()
+            
+            # Ensure start_date and end_date are timezone-aware UTC
             start_date = pd.Timestamp(start_date).tz_localize('UTC') if start_date.tzinfo is None else pd.Timestamp(start_date).tz_convert('UTC')
             end_date = pd.Timestamp(end_date).tz_localize('UTC') if end_date.tzinfo is None else pd.Timestamp(end_date).tz_convert('UTC')
 
-            interval_seconds = timeframe_to_seconds(timeframe)
-            time_diff = end_date - start_date
-            time_diff_seconds = time_diff.total_seconds()
-            candles_limit = 2000
-            total_candles_needed = int(time_diff_seconds / interval_seconds) + 1
-            num_requests = max(1, (total_candles_needed + candles_limit - 1) // candles_limit)
-            logger.info(f"Fetching data for {symbol} {timeframe}: {total_candles_needed} candles needed, {num_requests} API requests")
-
-            base_url = "https://min-api.cryptocompare.com/data"
-            if interval_seconds < 3600:
-                endpoint = "histominute"
-                aggregate = int(interval_seconds / 60)
-            elif interval_seconds < 86400:
-                endpoint = "histohour"
-                aggregate = int(interval_seconds / 3600)
-            else:
-                endpoint = "histoday"
-                aggregate = int(interval_seconds / 86400)
-
-            all_data = []
-            current_end = end_date
-            retries_per_chunk = 3
-            for i in range(num_requests):
-                current_start = max(start_date, current_end - timedelta(seconds=candles_limit * interval_seconds))
-                api_url = (f"{base_url}/{endpoint}?fsym={symbol.split('/')[0]}&tsym={symbol.split('/')[1]}"
-                        f"&limit={candles_limit}&aggregate={aggregate}&e=CCCAGG")
-                if self.api_key:
-                    api_url += f"&api_key={self.api_key}"
-                api_url += f"&toTs={int(current_end.timestamp())}"
-
-                logger.debug(f"Fetching API chunk {i+1}/{num_requests} for {symbol} {timeframe} from {current_start} to {current_end}")
-
-                for attempt in range(retries_per_chunk):
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(api_url) as response:
-                            if response.status != 200:
-                                logger.warning(f"API error on attempt {attempt+1}/{retries_per_chunk}: {response.status} - {await response.text()}")
-                                if attempt == retries_per_chunk - 1:
-                                    logger.error(f"Failed to fetch API chunk {i+1} after {retries_per_chunk} attempts")
-                                await asyncio.sleep(1)
-                                continue
-                            
-                            data = await response.json()
-                            
-                            if 'Response' in data and data['Response'] == 'Error':
-                                logger.warning(f"API error on attempt {attempt+1}/{retries_per_chunk}: {data['Message']}")
-                                if attempt == retries_per_chunk - 1:
-                                    logger.error(f"Failed API chunk {i+1} after {retries_per_chunk} attempts: {data['Message']}")
-                                await asyncio.sleep(1)
-                                continue
-                                
-                            if 'Data' not in data or not data['Data']:
-                                logger.warning(f"No data returned from API for {symbol} {timeframe} in chunk {i+1}")
-                                break
-                                
-                            ohlcv_data = data['Data']
-                            logger.debug(f"Fetched {len(ohlcv_data)} candles in chunk {i+1} for {symbol} {timeframe}")
-                            all_data.extend(ohlcv_data)
-                            break
-                
-                current_end = current_start - timedelta(seconds=1)
-                if current_end <= start_date:
-                    break
+            # Convert timestamps to milliseconds (CCXT standard)
+            since = int(start_date.timestamp() * 1000)
+            until = int(end_date.timestamp() * 1000)
             
-            if not all_data:
-                logger.warning(f"No data returned from API for {symbol} {timeframe} after all chunks")
+            # Check if exchange supports the timeframe
+            if not self.exchange.has['fetchOHLCV']:
+                logger.error(f"Exchange {self.exchange_id} does not support OHLCV data")
+                return pd.DataFrame()
+                
+            # Check if timeframe is supported
+            if timeframe not in self.exchange.timeframes:
+                logger.warning(f"Timeframe {timeframe} not supported by {self.exchange_id}. " +
+                              f"Available timeframes: {list(self.exchange.timeframes.keys())}")
+                
+                # Try to find a suitable alternative
+                alternative = self._find_alternative_timeframe(timeframe)
+                if alternative:
+                    logger.info(f"Using alternative timeframe {alternative} instead of {timeframe}")
+                    timeframe = alternative
+                else:
+                    logger.error(f"No suitable alternative timeframe found for {timeframe}")
+                    return pd.DataFrame()
+            
+            # Some exchanges have limits on how much data can be fetched at once
+            # Implement chunking to fetch data in smaller batches
+            all_ohlcv = []
+            current_since = since
+            fetch_attempt = 0
+            max_attempts = 5
+            
+            logger.info(f"Fetching OHLCV data for {symbol} {timeframe} from {start_date} to {end_date}")
+            
+            # Choose appropriate limit based on exchange
+            # Default to 1000, but some exchanges have lower limits
+            limit = 1000
+            if hasattr(self.exchange, 'rateLimit'):
+                # Adjust based on rate limits to avoid hitting them
+                await asyncio.sleep(self.exchange.rateLimit / 1000)
+            
+            while current_since < until and fetch_attempt < max_attempts:
+                try:
+                    # Fetch OHLCV data
+                    ohlcv = await self.exchange.fetch_ohlcv(
+                        symbol, 
+                        timeframe, 
+                        since=current_since,
+                        limit=limit
+                    )
+                    
+                    if not ohlcv or len(ohlcv) == 0:
+                        logger.warning(f"No data returned for {symbol} {timeframe} since {current_since}")
+                        break
+                    
+                    # Add fetched data to our collection
+                    all_ohlcv.extend(ohlcv)
+                    
+                    # Update since for next iteration
+                    # Use the timestamp of the last candle + 1ms to avoid duplication
+                    last_timestamp = ohlcv[-1][0] + 1
+                    
+                    # If the last timestamp is the same as current_since, we're not making progress
+                    if last_timestamp <= current_since:
+                        logger.warning(f"No progress in fetching data for {symbol} {timeframe}, breaking the loop")
+                        break
+                        
+                    current_since = last_timestamp
+                    
+                    # Wait to respect rate limits
+                    await asyncio.sleep(self.exchange.rateLimit / 1000)
+                    
+                    # Reset fetch attempt counter on successful fetch
+                    fetch_attempt = 0
+                    
+                    # If we fetched fewer candles than the limit, we've likely reached the end
+                    if len(ohlcv) < limit:
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"Error fetching OHLCV data for {symbol} {timeframe}: {str(e)}")
+                    fetch_attempt += 1
+                    if fetch_attempt >= max_attempts:
+                        logger.error(f"Max fetch attempts reached for {symbol} {timeframe}")
+                        break
+                    # Exponential backoff
+                    await asyncio.sleep(2 ** fetch_attempt)
+            
+            if not all_ohlcv:
+                logger.warning(f"No OHLCV data collected for {symbol} {timeframe}")
                 return pd.DataFrame()
             
-            df = pd.DataFrame(all_data)
-            df['timestamp'] = pd.to_datetime(df['time'], unit='s', utc=True)
+            # Convert OHLCV data to DataFrame
+            # CCXT OHLCV format: [timestamp, open, high, low, close, volume]
+            df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            
+            # Set timestamp as index
             df.set_index('timestamp', inplace=True)
-            df = df.loc[~df.index.duplicated(keep='first')]
-            df = df.sort_index()
-            logger.debug(f"Processed {len(df)} rows after deduplication for {symbol} {timeframe} from {df.index.min()} to {df.index.max()}")
-
-            column_mapping = {
-                'time': 'timestamp',
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'volumefrom': 'volume'
-            }
             
-            df = df.rename(columns=column_mapping)
+            # Remove duplicates and sort by timestamp
+            df = df[~df.index.duplicated(keep='first')].sort_index()
             
-            required_columns = ['open', 'high', 'low', 'close', 'volume']
-            for col in required_columns:
-                if col not in df.columns:
-                    logger.warning(f"Missing column {col} in API data for {symbol} {timeframe}")
-                    return pd.DataFrame()
-                    
+            # Filter to the requested date range
             df = df[(df.index >= start_date) & (df.index <= end_date)]
-            logger.info(f"Fetched {len(df)} rows for {symbol} {timeframe} from API")
             
-            return df[required_columns]
+            logger.info(f"Fetched {len(df)} rows for {symbol} {timeframe} using CCXT")
+            return df
             
         except Exception as e:
-            logger.error(f"Error fetching API data for {symbol} {timeframe}: {str(e)}")
+            logger.error(f"Error fetching CCXT data for {symbol} {timeframe}: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return pd.DataFrame()
+    
+    def _find_alternative_timeframe(self, timeframe: str) -> Optional[str]:
+        """
+        Find an alternative timeframe if the requested one is not supported.
+        
+        Args:
+            timeframe: Requested timeframe
+            
+        Returns:
+            Optional[str]: Alternative timeframe or None if not found
+        """
+        # Common timeframe mappings
+        mappings = {
+            '1m': ['1m', '1min', 'M1', '1'],
+            '5m': ['5m', '5min', 'M5', '5'],
+            '15m': ['15m', '15min', 'M15', '15'],
+            '30m': ['30m', '30min', 'M30', '30'],
+            '1h': ['1h', '60m', '60min', 'H1', '60'],
+            '2h': ['2h', '120m', '120min', 'H2', '120'],
+            '4h': ['4h', '240m', '240min', 'H4', '240'],
+            '1d': ['1d', '1day', 'D1', 'D', '1440'],
+            '1w': ['1w', '1week', 'W1', 'W'],
+            '1M': ['1M', '1month', 'M', 'MN']
+        }
+        
+        # Extract all available timeframes from the exchange
+        if not hasattr(self.exchange, 'timeframes') or not self.exchange.timeframes:
+            return None
+            
+        available_timeframes = list(self.exchange.timeframes.keys())
+        
+        # First check for direct match
+        if timeframe in available_timeframes:
+            return timeframe
+            
+        # Find alternatives based on common mappings
+        for standard, alternatives in mappings.items():
+            if timeframe in alternatives:
+                # Find a match from alternatives
+                for alt in alternatives:
+                    if alt in available_timeframes:
+                        return alt
+                        
+                # If not found, check for standard format
+                if standard in available_timeframes:
+                    return standard
+                    
+        # If no match found in mappings, try to find closest matching timeframe
+        # This is more complex and requires parsing the timeframe string
+        try:
+            import re
+            # Extract number and unit from timeframe
+            match = re.match(r'(\d+)([mhdwMy])', timeframe)
+            if match:
+                value, unit = match.groups()
+                value = int(value)
+                
+                # Find all timeframes with the same unit
+                same_unit = [tf for tf in available_timeframes if tf.endswith(unit)]
+                if same_unit:
+                    # Find the closest value
+                    closest = min(same_unit, key=lambda x: abs(int(re.match(r'(\d+)', x).group(1)) - value))
+                    return closest
+        except:
+            pass
+            
+        return None
             
     async def _get_data_from_database(
         self,
@@ -458,6 +585,12 @@ class HistoricalDataProvider:
             await self.save_data_to_csv(symbol, timeframe, data)
             
         return data
+    
+    async def close(self):
+        """Close the CCXT exchange connection."""
+        if self.exchange:
+            await self.exchange.close()
+            logger.info(f"Closed connection to {self.exchange_id} exchange")
         
     async def update_historical_data(
         self,

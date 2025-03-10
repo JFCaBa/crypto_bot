@@ -12,6 +12,7 @@ from loguru import logger
 from cryptobot.core.trade import Trade
 from cryptobot.risk_management.stop_loss import StopLossHandler
 from cryptobot.risk_management.take_profit import TakeProfitHandler
+from cryptobot.risk_management.trailling_stop import TrailingStopHandler
 
 
 class RiskManager:
@@ -79,6 +80,7 @@ class RiskManager:
         # Initialize stop loss and take profit handlers
         self.stop_loss_handler = StopLossHandler()
         self.take_profit_handler = TakeProfitHandler()
+        self.trailing_stop_handler = TrailingStopHandler()
         
         # Kill switch
         self.kill_switch_active = False
@@ -313,6 +315,7 @@ class RiskManager:
         
         logger.debug("Anomaly check completed")
         
+    # Modify the register_position method in RiskManager
     def register_position(
         self,
         symbol: str,
@@ -324,113 +327,34 @@ class RiskManager:
         take_profit_price: float = None,
         stop_loss_strategy: str = 'percent',
         take_profit_strategy: str = 'percent',
+        trailing_stop: bool = False,
+        trailing_stop_percent: float = None,
+        trailing_stop_atr: float = None,
         stop_loss_params: Dict[str, Any] = None,
         take_profit_params: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
-        Register a new position with stop loss and take profit.
-        
-        Args:
-            symbol: Trading pair symbol
-            position_id: Position identifier
-            entry_price: Entry price of the position
-            side: Position side ('long' or 'short')
-            amount: Position size
-            stop_loss_price: Stop loss price (optional)
-            take_profit_price: Take profit price (optional)
-            stop_loss_strategy: Stop loss strategy
-            take_profit_strategy: Take profit strategy
-            stop_loss_params: Stop loss parameters
-            take_profit_params: Take profit parameters
-            
-        Returns:
-            dict: Position registration information
+        Register a new position with stop loss, take profit, and optional trailing stop.
         """
-        if stop_loss_params is None:
-            stop_loss_params = {}
-        if take_profit_params is None:
-            take_profit_params = {}
-            
-        position_info = {
-            'symbol': symbol,
-            'position_id': position_id,
-            'entry_price': entry_price,
-            'side': side,
-            'amount': amount,
-            'stop_loss': None,
-            'take_profit': None,
-            'created_at': datetime.now()
-        }
+        # [Existing code for registering stop loss and take profit...]
         
-        # Register stop loss if provided or calculate default
-        if stop_loss_price:
-            stop_loss = self.stop_loss_handler.register_stop_loss(
+        # Register trailing stop if enabled
+        trailing_stop_info = None
+        if trailing_stop and stop_loss_price is not None:
+            trailing_stop_info = self.register_trailing_stop(
                 symbol=symbol,
                 position_id=position_id,
                 entry_price=entry_price,
-                stop_loss_price=stop_loss_price,
                 side=side,
                 amount=amount,
-                strategy=stop_loss_strategy,
-                params=stop_loss_params
+                initial_stop_price=stop_loss_price,
+                trail_percent=trailing_stop_percent,
+                atr_value=trailing_stop_atr
             )
-            position_info['stop_loss'] = stop_loss
-        elif self.default_stop_loss > 0:
-            # Calculate default stop loss
-            stop_loss_price = self.stop_loss_handler.calculate_stop_loss(
-                symbol=symbol,
-                entry_price=entry_price,
-                side=side,
-                strategy='percent',
-                params={'percentage': self.default_stop_loss}
-            )
-            stop_loss = self.stop_loss_handler.register_stop_loss(
-                symbol=symbol,
-                position_id=position_id,
-                entry_price=entry_price,
-                stop_loss_price=stop_loss_price,
-                side=side,
-                amount=amount,
-                strategy='percent',
-                params={'percentage': self.default_stop_loss}
-            )
-            position_info['stop_loss'] = stop_loss
+            position_info['trailing_stop'] = trailing_stop_info
             
-        # Register take profit if provided or calculate default
-        if take_profit_price:
-            take_profit = self.take_profit_handler.register_take_profit(
-                symbol=symbol,
-                position_id=position_id,
-                entry_price=entry_price,
-                take_profit_price=take_profit_price,
-                side=side,
-                amount=amount,
-                strategy=take_profit_strategy,
-                params=take_profit_params
-            )
-            position_info['take_profit'] = take_profit
-        elif self.default_take_profit > 0:
-            # Calculate default take profit
-            take_profit_price = self.take_profit_handler.calculate_take_profit(
-                symbol=symbol,
-                entry_price=entry_price,
-                side=side,
-                strategy='percent',
-                params={'percentage': self.default_take_profit}
-            )
-            take_profit = self.take_profit_handler.register_take_profit(
-                symbol=symbol,
-                position_id=position_id,
-                entry_price=entry_price,
-                take_profit_price=take_profit_price,
-                side=side,
-                amount=amount,
-                strategy='percent',
-                params={'percentage': self.default_take_profit}
-            )
-            position_info['take_profit'] = take_profit
-            
-        logger.info(f"Registered position {position_id} for {symbol} with stop loss and take profit")
+        # [Remaining code...]
+        
         return position_info
         
     def update_position_exit_points(
@@ -501,9 +425,10 @@ class RiskManager:
                 
         return position_info
         
+    # Modify the close_position method in RiskManager
     def close_position(self, position_id: str) -> bool:
         """
-        Close a position and remove its stop loss and take profit orders.
+        Close a position and remove its stop loss, take profit, and trailing stop orders.
         
         Args:
             position_id: Position identifier
@@ -517,7 +442,10 @@ class RiskManager:
         # Cancel take profit
         take_profit_cancelled = self.take_profit_handler.cancel_take_profit(position_id)
         
-        return stop_loss_cancelled or take_profit_cancelled
+        # Cancel trailing stop
+        trailing_stop_cancelled = self.trailing_stop_handler.cancel_trailing_stop(position_id)
+        
+        return stop_loss_cancelled or take_profit_cancelled or trailing_stop_cancelled
         
     def check_exit_conditions(self, current_prices: Dict[str, float], timestamp=None) -> List[Dict[str, Any]]:
         """
@@ -772,7 +700,8 @@ class RiskManager:
         Returns:
             dict: Risk manager information
         """
-        return {
+
+        base_dict = {
             'max_positions': self.max_positions,
             'max_daily_trades': self.max_daily_trades,
             'max_drawdown_percent': self.max_drawdown_percent,
@@ -794,3 +723,9 @@ class RiskManager:
             'stop_loss_handler': self.stop_loss_handler.to_dict() if self.stop_loss_handler else None,
             'take_profit_handler': self.take_profit_handler.to_dict() if self.take_profit_handler else None
         }
+
+        base_dict['stop_loss_handler'] = self.stop_loss_handler.to_dict() if self.stop_loss_handler else None
+        base_dict['take_profit_handler'] = self.take_profit_handler.to_dict() if self.take_profit_handler else None
+        base_dict['trailing_stop_handler'] = self.trailing_stop_handler.to_dict() if self.trailing_stop_handler else None
+        
+        return base_dict

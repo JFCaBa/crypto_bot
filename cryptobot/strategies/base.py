@@ -177,6 +177,7 @@ class BaseStrategy(abc.ABC):
                 
             symbol = signal.get('symbol')
             action = signal.get('action')
+            logger.debug(f"Executing signal: {symbol}, action={action}, position={self.positions[symbol]}")
             
             if not symbol or not action:
                 logger.warning(f"Invalid signal: {signal}")
@@ -246,6 +247,7 @@ class BaseStrategy(abc.ABC):
                     self.trade_history.append(trade)
                     executed_trades.append(trade)
                     logger.info(f"Executed buy signal for {symbol}: {trade}")
+                    logger.debug(f"Post-buy position: {self.positions[symbol]}")
                     
                 elif action == 'sell' and not self.positions[symbol]['is_active']:
                     # Open short position (if supported)
@@ -301,6 +303,7 @@ class BaseStrategy(abc.ABC):
                     self.trade_history.append(trade)
                     executed_trades.append(trade)
                     logger.info(f"Executed sell signal for {symbol}: {trade}")
+                    logger.debug(f"Post-close position: {self.positions[symbol]}")
                     
                 elif action == 'close' and self.positions[symbol]['is_active']:
                     # Close position
